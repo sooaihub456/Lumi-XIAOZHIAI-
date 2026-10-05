@@ -56,7 +56,7 @@ Xiaozhi requires `Authorization`, `Device-Id`, `Client-Id`, and `Protocol-Versio
 Android now connects **directly** to Xiaozhi through the native `MoriXiaozhi` plugin. No Node bridge, Cloudflare tunnel, or `ALLOWED_ORIGINS` configuration is needed on the phone.
 
 1. Use an existing paired Xiaozhi device and obtain its matching Device ID, Client ID, and access token.
-2. In **Settings & connection**, leave the server URL at `wss://api.xiaozhi.me/xiaozhi/v1/` unless the device was paired to another/self-hosted server.
+2. In **Settings & connection**, leave the server URL at `wss://api.tenclass.net/xiaozhi/v1/` unless the device was paired to another/self-hosted server.
 3. Enter the matching credentials and choose **Connect to Xiaozhi**.
 
 The native layer uses an authenticated secure WebSocket, sends the protocol `hello`, forwards JSON/MCP messages, and streams returned Opus audio frames back to the UI. The access token is session-only in the frontend and is not saved to local storage.
@@ -102,3 +102,10 @@ Protocol reference: https://xiaozhi.dev/en/docs/development/websocket/
 ## Verification
 
 The production frontend is verified with the provided project build. Live end-to-end Xiaozhi authentication and upstream responses require a paired device and network access. Android connects natively; the web build requires the optional bridge. No live account credentials are bundled.
+## Native voice playback
+
+Android live replies now use native Opus decoding and AudioTrack playback instead of WebView/WASM audio.
+
+## Android connection resilience
+
+The direct Android Xiaozhi client now automatically reconnects after temporary WebSocket/network/server disconnects. It uses WebSocket control pings plus bounded exponential reconnect backoff, and replays the Xiaozhi hello handshake to obtain a fresh session automatically. See `CONNECTION-RELIABILITY-FIX.md`.

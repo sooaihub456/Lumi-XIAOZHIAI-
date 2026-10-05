@@ -8,12 +8,15 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-
-import org.json.JSONObject;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.SSLException;
+
+import org.json.JSONObject;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -26,16 +29,29 @@ import okio.ByteString;
 public class MoriXiaozhiPlugin extends Plugin {
     private static final int MAX_CREDENTIAL_LENGTH = 8192;
     private static final int MAX_TEXT_FRAME_LENGTH = 1024 * 1024;
+    private static final long[] RECONNECT_DELAYS_MS = { 1000L, 2000L, 4000L, 8000L, 15000L, 30000L };
 
     private final Object socketLock = new Object();
+    private final ScheduledExecutorService reconnectExecutor = Executors.newSingleThreadScheduledExecutor();
     private final OkHttpClient client = new OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(25, TimeUnit.SECONDS)
+        // WebSocket control pings keep NAT/proxy state alive. Xiaozhi may still
+        // intentionally end an idle conversation, which is handled by reconnect.
+        .pingInterval(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build();
 
     private WebSocket socket;
+    private ScheduledFuture<?> reconnectTask;
     private long generation = 0;
+    private boolean reconnectEnabled = false;
+    private int reconnectAttempt = 0;
+    private String savedUrl = "";
+    private String savedDeviceId = "";
+    private String savedClientId = "";
+    private String savedToken = "";
+    private String savedHello = "";
     private NativeOpusPlayer audioPlayer;
 
     @Override
@@ -58,6 +74,19 @@ public class MoriXiaozhiPlugin extends Plugin {
             if (audioPlayer != null) audioPlayer.configure(sampleRate, channels);
         } catch (Exception ignored) {
             // Not every JSON message carries audio settings.
+        }
+    }
+
+    private void rememberHello(String text) {
+        try {
+            JSONObject message = new JSONObject(text);
+            if ("hello".equals(message.optString("type")) && "websocket".equals(message.optString("transport"))) {
+                synchronized (socketLock) {
+                    savedHello = text;
+                }
+            }
+        } catch (Exception ignored) {
+            // Ordinary application messages are not hello packets.
         }
     }
 
@@ -87,6 +116,15 @@ public class MoriXiaozhiPlugin extends Plugin {
         if (isCurrent(candidate)) notifyListeners(name, payload);
     }
 
+    private void emitState(String state, long candidate, boolean reconnected, int attempt, long delayMs) {
+        JSObject event = new JSObject();
+        event.put("state", state);
+        event.put("reconnected", reconnected);
+        if (attempt > 0) event.put("attempt", attempt);
+        if (delayMs > 0) event.put("delayMs", delayMs);
+        emit("state", event, candidate);
+    }
+
     private String failureMessage(Throwable throwable, Response response) {
         if (response != null) {
             int code = response.code();
@@ -105,14 +143,225 @@ public class MoriXiaozhiPlugin extends Plugin {
         return "Could not connect to Xiaozhi: " + detail;
     }
 
-    private void closeCurrent(int code, String reason) {
+    private boolean isFatalFailure(Throwable throwable, Response response) {
+        if (throwable instanceof SSLException) return true;
+        if (response == null) return false;
+        int code = response.code();
+        if (code == 408 || code == 429) return false;
+        return code >= 400 && code < 500;
+    }
+
+    private String fatalCloseMessage(int code, String reason) {
+        switch (code) {
+            case 1002:
+            case 1003:
+            case 1007:
+            case 1008:
+            case 1009:
+                String suffix = reason == null || reason.trim().isEmpty() ? "" : ": " + reason.trim();
+                return "Xiaozhi closed the connection with a non-retryable WebSocket error (code " + code + ")" + suffix;
+            default:
+                return null;
+        }
+    }
+
+    private void clearReconnectTaskLocked() {
+        if (reconnectTask != null) {
+            reconnectTask.cancel(false);
+            reconnectTask = null;
+        }
+    }
+
+    private void stopConnection(int code, String reason, boolean clearCredentials) {
         WebSocket current;
         synchronized (socketLock) {
+            reconnectEnabled = false;
+            clearReconnectTaskLocked();
             generation += 1;
+            reconnectAttempt = 0;
             current = socket;
             socket = null;
+            savedHello = "";
+            if (clearCredentials) {
+                savedUrl = "";
+                savedDeviceId = "";
+                savedClientId = "";
+                savedToken = "";
+            }
         }
         if (current != null) current.close(code, reason);
+    }
+
+    private void emitFatalError(String message, long candidate) {
+        synchronized (socketLock) {
+            if (candidate != generation) return;
+            reconnectEnabled = false;
+            clearReconnectTaskLocked();
+            socket = null;
+        }
+        JSObject event = new JSObject();
+        event.put("message", message);
+        emit("error", event, candidate);
+    }
+
+    private void scheduleReconnect(long candidate, PluginCall initialCall, AtomicBoolean settled, String cause) {
+        final int attempt;
+        final long delayMs;
+        synchronized (socketLock) {
+            if (candidate != generation || !reconnectEnabled) return;
+            if (reconnectTask != null && !reconnectTask.isDone()) return;
+            reconnectAttempt += 1;
+            attempt = reconnectAttempt;
+            delayMs = RECONNECT_DELAYS_MS[Math.min(attempt - 1, RECONNECT_DELAYS_MS.length - 1)];
+            socket = null;
+            reconnectTask = reconnectExecutor.schedule(() -> {
+                synchronized (socketLock) {
+                    if (candidate != generation || !reconnectEnabled) return;
+                    reconnectTask = null;
+                }
+                emitState("connecting", candidate, true, attempt, 0);
+                openSocket(candidate, initialCall, settled, true);
+            }, delayMs, TimeUnit.MILLISECONDS);
+        }
+
+        JSObject event = new JSObject();
+        event.put("state", "reconnecting");
+        event.put("reconnected", false);
+        event.put("attempt", attempt);
+        event.put("delayMs", delayMs);
+        if (cause != null && !cause.trim().isEmpty()) event.put("reason", cause);
+        emit("state", event, candidate);
+    }
+
+    private void openSocket(long candidate, PluginCall initialCall, AtomicBoolean settled, boolean reconnecting) {
+        final String url;
+        final String deviceId;
+        final String clientId;
+        final String token;
+        final String hello;
+        synchronized (socketLock) {
+            if (candidate != generation || !reconnectEnabled) return;
+            url = savedUrl;
+            deviceId = savedDeviceId;
+            clientId = savedClientId;
+            token = savedToken;
+            hello = savedHello;
+        }
+
+        Request.Builder builder = new Request.Builder()
+            .url(url)
+            .header("Device-Id", deviceId)
+            .header("Client-Id", clientId)
+            .header("Protocol-Version", "1")
+            .header("User-Agent", "Mori-Android/0.7");
+        if (!token.trim().isEmpty()) builder.header("Authorization", "Bearer " + token);
+
+        WebSocket created = client.newWebSocket(builder.build(), new WebSocketListener() {
+            @Override
+            public void onOpen(WebSocket webSocket, Response response) {
+                if (!isCurrent(candidate)) {
+                    webSocket.close(1000, "Stale connection");
+                    return;
+                }
+                final String helloToReplay;
+                final boolean wasReconnect;
+                synchronized (socketLock) {
+                    if (candidate != generation || !reconnectEnabled) {
+                        webSocket.close(1000, "Stale connection");
+                        return;
+                    }
+                    socket = webSocket;
+                    reconnectAttempt = 0;
+                    clearReconnectTaskLocked();
+                    helloToReplay = savedHello;
+                    wasReconnect = reconnecting;
+                }
+
+                emitState("open", candidate, wasReconnect, 0, 0);
+
+                // The JS side sends hello on the first connection. On subsequent
+                // automatic reconnects, replay the same hello natively so the
+                // server can issue a fresh session_id without user intervention.
+                if (wasReconnect && helloToReplay != null && !helloToReplay.isEmpty()) {
+                    if (!webSocket.send(helloToReplay)) {
+                        scheduleReconnect(candidate, initialCall, settled, "Could not replay Xiaozhi hello after reconnect.");
+                        return;
+                    }
+                }
+
+                if (settled.compareAndSet(false, true)) {
+                    JSObject result = new JSObject();
+                    result.put("connected", true);
+                    initialCall.resolve(result);
+                }
+            }
+
+            @Override
+            public void onMessage(WebSocket webSocket, String text) {
+                if (!isCurrent(candidate)) return;
+                inspectAudioSettings(text);
+                if (text.length() > MAX_TEXT_FRAME_LENGTH) {
+                    webSocket.close(1009, "Message too large");
+                    return;
+                }
+                JSObject event = new JSObject();
+                event.put("kind", "text");
+                event.put("data", text);
+                emit("message", event, candidate);
+            }
+
+            @Override
+            public void onMessage(WebSocket webSocket, ByteString bytes) {
+                if (!isCurrent(candidate)) return;
+                if (audioPlayer != null) audioPlayer.enqueue(bytes.toByteArray());
+            }
+
+            @Override
+            public void onClosing(WebSocket webSocket, int code, String reason) {
+                if (isCurrent(candidate)) webSocket.close(code, reason);
+            }
+
+            @Override
+            public void onClosed(WebSocket webSocket, int code, String reason) {
+                if (!isCurrent(candidate)) return;
+                synchronized (socketLock) {
+                    if (candidate == generation && socket == webSocket) socket = null;
+                }
+
+                String fatal = fatalCloseMessage(code, reason);
+                if (fatal != null) {
+                    emitFatalError(fatal, candidate);
+                    if (settled.compareAndSet(false, true)) initialCall.reject(fatal);
+                    return;
+                }
+
+                String detail = "WebSocket closed" + (code > 0 ? " (code " + code + ")" : "")
+                    + (reason == null || reason.trim().isEmpty() ? "" : ": " + reason.trim());
+                scheduleReconnect(candidate, initialCall, settled, detail);
+            }
+
+            @Override
+            public void onFailure(WebSocket webSocket, Throwable throwable, Response response) {
+                if (!isCurrent(candidate)) return;
+                synchronized (socketLock) {
+                    if (candidate == generation && socket == webSocket) socket = null;
+                }
+
+                String message = failureMessage(throwable, response);
+                if (isFatalFailure(throwable, response)) {
+                    emitFatalError(message, candidate);
+                    if (settled.compareAndSet(false, true)) initialCall.reject(message);
+                    return;
+                }
+
+                scheduleReconnect(candidate, initialCall, settled, message);
+            }
+        });
+
+        synchronized (socketLock) {
+            if (candidate == generation && reconnectEnabled) socket = created;
+            else created.close(1000, "Stale connection");
+        }
     }
 
     @PluginMethod
@@ -131,99 +380,23 @@ public class MoriXiaozhiPlugin extends Plugin {
             return;
         }
 
-        closeCurrent(1000, "Replacing connection");
+        stopConnection(1000, "Replacing connection", true);
 
         final long currentGeneration;
         synchronized (socketLock) {
             currentGeneration = ++generation;
+            reconnectEnabled = true;
+            reconnectAttempt = 0;
+            savedUrl = url;
+            savedDeviceId = deviceId;
+            savedClientId = clientId;
+            savedToken = token;
+            savedHello = "";
         }
+
         AtomicBoolean settled = new AtomicBoolean(false);
-
-        Request.Builder builder = new Request.Builder()
-            .url(url)
-            .header("Device-Id", deviceId)
-            .header("Client-Id", clientId)
-            .header("Protocol-Version", "1")
-            .header("User-Agent", "Mori-Android/0.6");
-        if (!token.trim().isEmpty()) builder.header("Authorization", "Bearer " + token);
-
-        WebSocket created = client.newWebSocket(builder.build(), new WebSocketListener() {
-            @Override
-            public void onOpen(WebSocket webSocket, Response response) {
-                if (!isCurrent(currentGeneration)) {
-                    webSocket.close(1000, "Stale connection");
-                    return;
-                }
-                synchronized (socketLock) {
-                    if (currentGeneration == generation) socket = webSocket;
-                }
-                JSObject state = new JSObject();
-                state.put("state", "open");
-                emit("state", state, currentGeneration);
-                if (settled.compareAndSet(false, true)) {
-                    JSObject result = new JSObject();
-                    result.put("connected", true);
-                    call.resolve(result);
-                }
-            }
-
-            @Override
-            public void onMessage(WebSocket webSocket, String text) {
-                if (!isCurrent(currentGeneration)) return;
-                inspectAudioSettings(text);
-                if (text.length() > MAX_TEXT_FRAME_LENGTH) {
-                    webSocket.close(1009, "Message too large");
-                    return;
-                }
-                JSObject event = new JSObject();
-                event.put("kind", "text");
-                event.put("data", text);
-                emit("message", event, currentGeneration);
-            }
-
-            @Override
-            public void onMessage(WebSocket webSocket, ByteString bytes) {
-                if (!isCurrent(currentGeneration)) return;
-                if (audioPlayer != null) audioPlayer.enqueue(bytes.toByteArray());
-            }
-
-            @Override
-            public void onClosing(WebSocket webSocket, int code, String reason) {
-                if (isCurrent(currentGeneration)) webSocket.close(code, reason);
-            }
-
-            @Override
-            public void onClosed(WebSocket webSocket, int code, String reason) {
-                if (!isCurrent(currentGeneration)) return;
-                synchronized (socketLock) {
-                    if (currentGeneration == generation) socket = null;
-                }
-                JSObject event = new JSObject();
-                event.put("code", code);
-                event.put("reason", reason == null ? "" : reason);
-                emit("closed", event, currentGeneration);
-                if (settled.compareAndSet(false, true)) call.reject("Xiaozhi closed the connection before it was ready.");
-            }
-
-            @Override
-            public void onFailure(WebSocket webSocket, Throwable throwable, Response response) {
-                if (!isCurrent(currentGeneration)) return;
-                synchronized (socketLock) {
-                    if (currentGeneration == generation) socket = null;
-                }
-                String message = failureMessage(throwable, response);
-                JSObject event = new JSObject();
-                event.put("message", message);
-                if (response != null) event.put("httpStatus", response.code());
-                emit("error", event, currentGeneration);
-                if (settled.compareAndSet(false, true)) call.reject(message);
-            }
-        });
-
-        synchronized (socketLock) {
-            if (currentGeneration == generation) socket = created;
-            else created.close(1000, "Stale connection");
-        }
+        emitState("connecting", currentGeneration, false, 0, 0);
+        openSocket(currentGeneration, call, settled, false);
     }
 
     @PluginMethod
@@ -233,12 +406,14 @@ public class MoriXiaozhiPlugin extends Plugin {
             call.reject("Invalid Xiaozhi message.");
             return;
         }
+        rememberHello(text);
+
         WebSocket current;
         synchronized (socketLock) {
             current = socket;
         }
         if (current == null) {
-            call.reject("The Xiaozhi connection is not open.");
+            call.reject("The Xiaozhi connection is temporarily reconnecting.");
             return;
         }
         if (!current.send(text)) {
@@ -263,18 +438,19 @@ public class MoriXiaozhiPlugin extends Plugin {
 
     @PluginMethod
     public void disconnect(PluginCall call) {
-        closeCurrent(1000, "Leaving the conversation");
+        stopConnection(1000, "Leaving the conversation", true);
         if (audioPlayer != null) audioPlayer.stop();
         call.resolve();
     }
 
     @Override
     protected void handleOnDestroy() {
-        closeCurrent(1000, "App closed");
+        stopConnection(1000, "App closed", true);
         if (audioPlayer != null) {
             audioPlayer.release();
             audioPlayer = null;
         }
+        reconnectExecutor.shutdownNow();
         client.dispatcher().executorService().shutdown();
         client.connectionPool().evictAll();
         super.handleOnDestroy();

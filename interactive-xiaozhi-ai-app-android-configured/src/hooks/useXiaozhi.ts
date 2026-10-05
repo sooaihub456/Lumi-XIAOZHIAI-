@@ -151,7 +151,26 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
           listeners.push(await NativeXiaozhi.addListener('audioError', (event) => {
             setError(event.message || 'Android could not play the Xiaozhi voice reply. Text chat is still available.');
           }));
-          listeners.push(await NativeXiaozhi.addListener('state', () => {}));
+          listeners.push(await NativeXiaozhi.addListener('state', (event) => {
+            if (generation !== nativeGeneration.current || failed) return;
+            if (event.state === 'reconnecting' || event.state === 'connecting') {
+              nativeActive.current = false;
+              session.current = '';
+              audio.current?.stop();
+              setStatus('connecting');
+              setError('');
+            } else if (event.state === 'open') {
+              // The native layer will replay the saved hello automatically after
+              // a reconnect. Keep the UI in connecting state until Xiaozhi sends
+              // a fresh server hello/session_id.
+              nativeActive.current = true;
+              if (event.reconnected) {
+                session.current = '';
+                setStatus('connecting');
+                setError('');
+              }
+            }
+          }));
 
           if (generation !== nativeGeneration.current || failed) {
             listeners.forEach((listener) => { void listener.remove().catch(() => {}); });

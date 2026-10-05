@@ -31,7 +31,7 @@ interface NativeXiaozhiPlugin {
   addListener(eventName: 'error', listener: (event: NativeXiaozhiErrorEvent) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'closed', listener: (event: NativeXiaozhiClosedEvent) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'audioError', listener: (event: NativeXiaozhiAudioErrorEvent) => void): Promise<PluginListenerHandle>;
-  addListener(eventName: 'state', listener: (event: { state: string }) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'state', listener: (event: { state: string; reconnected?: boolean; attempt?: number; delayMs?: number; reason?: string }) => void): Promise<PluginListenerHandle>;
 }
 
 export const NativeXiaozhi = registerPlugin<NativeXiaozhiPlugin>('MoriXiaozhi');
