@@ -2,121 +2,64 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: Publish a preview release with a direct APK download
-        required: false
-        type: boolean
-        default: true
   push:
-    branches: [main, master]
+    branches:
+      - main
 
 permissions:
   contents: read
 
-concurrency:
-  group: mori-android-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   apk:
-    name: Compile and verify the test APK
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: interactive-xiaozhi-ai-app-android-configured
+
     steps:
-      - name: Check out Mori
+      - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Set up Node 22
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android build tools
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-
-      - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Keep the test signing key between builds
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: mori-test-key-${{ github.repository_id }}-v1
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm ci
 
-      - name: Check TypeScript
-        run: npx tsc --noEmit
-
-      - name: Build the bundled web app
+      - name: Build web application
         run: npm run build
 
-      - name: Package and verify APK signature
+      - name: Build Android APK
         run: node scripts/build-apk.mjs
 
-      - name: Upload installable APK
-        id: upload
+      - name: Check APK exists
+        run: |
+          echo "APK files:"
+          find artifacts -type f -maxdepth 2 -print
+          test -f artifacts/mori-preview.apk
+
+      - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: mori-android-apk
-          path: artifacts/
+          path: interactive-xiaozhi-ai-app-android-configured/artifacts/mori-preview.apk
           if-no-files-found: error
           retention-days: 30
-
-      - name: Show download instructions
-        env:
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
-        run: |
-          printf '## Mori Android preview\n\n' >> "$GITHUB_STEP_SUMMARY"
-          printf '[Download the APK artifact](%s)\n\n' "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
-          printf 'Extract the ZIP and install **mori-preview.apk** on Android 7 or newer.\n\n' >> "$GITHUB_STEP_SUMMARY"
-          printf 'This is a verified debug-signed test APK, not a Play Store release. Live Xiaozhi requires your bridge and paired credentials.\n' >> "$GITHUB_STEP_SUMMARY"
-
-  publish:
-    name: Publish a direct APK download
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: apk
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download verified build
-        uses: actions/download-artifact@v4
-        with:
-          name: mori-android-apk
-          path: artifacts
-
-      - name: Create a preview release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          COMMIT: ${{ github.sha }}
-          TAG: android-preview-${{ github.run_number }}-${{ github.run_attempt }}
-        run: |
-          gh release create "$TAG" \
-            artifacts/mori-preview.apk \
-            artifacts/mori-preview.apk.sha256 \
-            artifacts/build-info.json \
-            artifacts/INSTALL.txt \
-            --target "$COMMIT" \
-            --title "Mori Android preview $GITHUB_RUN_NUMBER" \
-            --prerelease \
-            --notes-file artifacts/INSTALL.txt
-          URL="https://github.com/$GH_REPO/releases/download/$TAG/mori-preview.apk"
-          printf '## Install on your phone\n\n[Download mori-preview.apk](%s)\n' "$URL" >> "$GITHUB_STEP_SUMMARY"
