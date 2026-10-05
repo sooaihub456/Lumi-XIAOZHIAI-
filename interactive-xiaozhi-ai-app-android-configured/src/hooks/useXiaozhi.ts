@@ -7,13 +7,6 @@ import { moriTools, type MoriToolHandler } from '../lib/mcp';
 import { NativeXiaozhi } from '../lib/xiaozhiNative';
 import type { ConnectionConfig, ConnectionStatus, XiaozhiEvent } from '../types';
 
-function base64ToArrayBuffer(value: string) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes.buffer;
-}
-
 export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: MoriToolHandler) {
   const [status, setStatus] = useState<ConnectionStatus>('demo');
   const [error, setError] = useState('');
@@ -147,20 +140,16 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
         try {
           listeners.push(await NativeXiaozhi.addListener('message', (message) => {
             if (generation !== nativeGeneration.current || failed) return;
-            if (message.kind === 'binary') {
-              try {
-                getAudio().enqueue(base64ToArrayBuffer(message.data), () => setError('Voice playback is unavailable, but your text conversation still works.'));
-              } catch {
-                setError('A Xiaozhi audio frame could not be decoded. Text chat is still available.');
-              }
-              return;
-            }
+            if (message.kind === 'binary') return; // Native Android consumes Opus frames before they reach the WebView.
             handleTextMessage(message.data, send, fail);
           }));
           listeners.push(await NativeXiaozhi.addListener('error', (event) => fail(event.message || 'The native Xiaozhi connection failed.')));
           listeners.push(await NativeXiaozhi.addListener('closed', (event) => {
             const reason = event.reason?.trim();
             fail(`Xiaozhi closed the connection${event.code ? ` (code ${event.code})` : ''}${reason ? `: ${reason}` : '.'}`);
+          }));
+          listeners.push(await NativeXiaozhi.addListener('audioError', (event) => {
+            setError(event.message || 'Android could not play the Xiaozhi voice reply. Text chat is still available.');
           }));
           listeners.push(await NativeXiaozhi.addListener('state', () => {}));
 
@@ -237,6 +226,19 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     }
   }, [disconnect, getAudio, removeNativeListeners]);
 
+  const unlockAudio = useCallback(async () => {
+    if (isNative) return;
+    await getAudio().unlock();
+  }, [getAudio]);
+
+  const setAudioEnabled = useCallback((enabled: boolean) => {
+    if (isNative) {
+      void NativeXiaozhi.setAudioEnabled({ enabled }).catch(() => {});
+      return;
+    }
+    getAudio().setEnabled(enabled);
+  }, [getAudio]);
+
   const sendText = useCallback((text: string) => {
     if (status !== 'connected') return false;
     const message = JSON.stringify({ session_id: session.current, type: 'listen', state: 'detect', text });
@@ -257,6 +259,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current?.stop();
     const message = JSON.stringify({ session_id: session.current, type: 'abort', reason: 'wake_word_detected' });
     if (isNative) {
+      void NativeXiaozhi.stopAudio().catch(() => {});
       if (nativeActive.current) void NativeXiaozhi.send({ text: message }).catch(() => {});
       return;
     }
@@ -276,5 +279,5 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current = null;
   }, [removeNativeListeners]);
 
-  return { status, error, connect, disconnect, sendText, interrupt, getAudio };
+  return { status, error, connect, disconnect, sendText, interrupt, getAudio, unlockAudio, setAudioEnabled };
 }

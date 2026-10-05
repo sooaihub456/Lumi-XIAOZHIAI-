@@ -224,14 +224,14 @@ export default function App() {
     voice.abort();
     stopSpeech();
     xiaozhi.interrupt();
-    xiaozhi.getAudio().setEnabled(false);
+    xiaozhi.setAudioEnabled(false);
     clearTimeout(replyTimer.current);
     clearTimeout(responseTimeout.current);
     setBusy(false);
     setSpeaking(false);
     streamId.current = null;
   }, () => {
-    xiaozhi.getAudio().setEnabled(voiceRef.current);
+    xiaozhi.setAudioEnabled(voiceRef.current);
   });
 
   useEffect(() => {
@@ -255,9 +255,9 @@ export default function App() {
   }, [profile, messages, memories, worldId, voiceEnabled, gentleMotion, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId]);
 
   useEffect(() => {
-    xiaozhi.getAudio().setEnabled(voiceEnabled);
+    xiaozhi.setAudioEnabled(voiceEnabled);
     if (!voiceEnabled) { stopSpeech(); setSpeaking(false); }
-  }, [voiceEnabled, xiaozhi.getAudio]);
+  }, [voiceEnabled, xiaozhi.setAudioEnabled]);
 
   useEffect(() => {
     if (xiaozhi.status === 'error' || xiaozhi.status === 'demo') {
@@ -325,7 +325,7 @@ export default function App() {
     }
     if (xiaozhi.status === 'connecting') { notify('Just a moment. Your Xiaozhi connection is still getting ready.'); return; }
     stopSpeech();
-    void xiaozhi.getAudio().unlock().catch(() => notify('Voice playback needs audio permission. Text chat is still available.'));
+    void xiaozhi.unlockAudio().catch(() => notify('Voice playback needs audio permission. Text chat is still available.'));
     streamId.current = null;
     lastSent.current = text;
     setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }]);
@@ -351,7 +351,7 @@ export default function App() {
     if (busy) { clearTimeout(replyTimer.current); clearTimeout(responseTimeout.current); setBusy(false); streamId.current = null; }
     xiaozhi.interrupt();
     setSpeaking(false);
-    void xiaozhi.getAudio().unlock().catch(() => {});
+    void xiaozhi.unlockAudio().catch(() => {});
     voice.start();
     setEmotion('curious');
   }
@@ -511,7 +511,7 @@ export default function App() {
         {panel === 'worlds' && <WorldsPanel selected={worldId} onSelect={selectWorld} home={living.home} onHomeChange={living.setHome} />}
         {panel === 'customize' && <CustomizePanel profile={profile} onChange={setProfile} onEmotion={(next) => { setEmotion(next); if (next === 'love') playGesture('hug', next); }} />}
         {panel === 'memories' && <MemoriesPanel memories={memories} companionName={profile.companionName} onDelete={(id) => { setMemories((previous) => previous.filter((memory) => memory.id !== id)); notify('Memory removed.'); }} onClose={closePanel} />}
-        {panel === 'settings' && <SettingsPanel config={config} onConfig={setConfig} status={xiaozhi.status} error={xiaozhi.error} onConnect={() => { stopSpeech(); clearTimeout(replyTimer.current); setBusy(false); setSpeaking(false); xiaozhi.connect(config); void xiaozhi.getAudio().unlock().catch(() => {}); }} onDisconnect={xiaozhi.disconnect} voiceEnabled={voiceEnabled} onVoiceToggle={() => setVoiceEnabled(!voiceEnabled)} reducedMotion={reducedMotion} onMotionToggle={() => { if (prefersReducedMotion) notify('Your device has Reduce Motion enabled. Change your system accessibility setting to allow more motion.'); else setGentleMotion(!gentleMotion); }} onReset={resetData} />}
+        {panel === 'settings' && <SettingsPanel config={config} onConfig={setConfig} status={xiaozhi.status} error={xiaozhi.error} onConnect={() => { stopSpeech(); clearTimeout(replyTimer.current); setBusy(false); setSpeaking(false); xiaozhi.connect(config); void xiaozhi.unlockAudio().catch(() => {}); }} onDisconnect={xiaozhi.disconnect} voiceEnabled={voiceEnabled} onVoiceToggle={() => setVoiceEnabled(!voiceEnabled)} reducedMotion={reducedMotion} onMotionToggle={() => { if (prefersReducedMotion) notify('Your device has Reduce Motion enabled. Change your system accessibility setting to allow more motion.'); else setGentleMotion(!gentleMotion); }} onReset={resetData} />}
       </PanelShell>}</AnimatePresence>
 
       <AnimatePresence>{computer && <Computer name={profile.companionName} request={computer} onClose={closeComputer} onAsk={sendMessage} connected={xiaozhi.status === 'connected'} assistantBusy={busy} assistantReply={[...messages].reverse().find((message) => message.role === 'assistant')?.text || ''} />}</AnimatePresence>

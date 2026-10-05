@@ -1,7 +1,6 @@
 package app.mori.companion;
 
 import android.net.Uri;
-import android.util.Base64;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -10,6 +9,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.util.concurrent.TimeUnit;
+
+import org.json.JSONObject;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.SSLException;
@@ -35,6 +36,30 @@ public class MoriXiaozhiPlugin extends Plugin {
 
     private WebSocket socket;
     private long generation = 0;
+    private NativeOpusPlayer audioPlayer;
+
+    @Override
+    public void load() {
+        audioPlayer = new NativeOpusPlayer(message -> {
+            JSObject event = new JSObject();
+            event.put("message", message);
+            notifyListeners("audioError", event);
+        });
+    }
+
+    private void inspectAudioSettings(String text) {
+        try {
+            JSONObject message = new JSONObject(text);
+            if (!"hello".equals(message.optString("type"))) return;
+            JSONObject params = message.optJSONObject("audio_params");
+            if (params == null) return;
+            int sampleRate = params.optInt("sample_rate", 24000);
+            int channels = params.optInt("channels", 1);
+            if (audioPlayer != null) audioPlayer.configure(sampleRate, channels);
+        } catch (Exception ignored) {
+            // Not every JSON message carries audio settings.
+        }
+    }
 
     private boolean validCredential(String value, boolean allowEmpty) {
         if (value == null) return allowEmpty;
@@ -145,6 +170,7 @@ public class MoriXiaozhiPlugin extends Plugin {
             @Override
             public void onMessage(WebSocket webSocket, String text) {
                 if (!isCurrent(currentGeneration)) return;
+                inspectAudioSettings(text);
                 if (text.length() > MAX_TEXT_FRAME_LENGTH) {
                     webSocket.close(1009, "Message too large");
                     return;
@@ -158,10 +184,7 @@ public class MoriXiaozhiPlugin extends Plugin {
             @Override
             public void onMessage(WebSocket webSocket, ByteString bytes) {
                 if (!isCurrent(currentGeneration)) return;
-                JSObject event = new JSObject();
-                event.put("kind", "binary");
-                event.put("data", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP));
-                emit("message", event, currentGeneration);
+                if (audioPlayer != null) audioPlayer.enqueue(bytes.toByteArray());
             }
 
             @Override
@@ -226,14 +249,32 @@ public class MoriXiaozhiPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void stopAudio(PluginCall call) {
+        if (audioPlayer != null) audioPlayer.stop();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setAudioEnabled(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled", true);
+        if (audioPlayer != null) audioPlayer.setEnabled(enabled == null || enabled);
+        call.resolve();
+    }
+
+    @PluginMethod
     public void disconnect(PluginCall call) {
         closeCurrent(1000, "Leaving the conversation");
+        if (audioPlayer != null) audioPlayer.stop();
         call.resolve();
     }
 
     @Override
     protected void handleOnDestroy() {
         closeCurrent(1000, "App closed");
+        if (audioPlayer != null) {
+            audioPlayer.release();
+            audioPlayer = null;
+        }
         client.dispatcher().executorService().shutdown();
         client.connectionPool().evictAll();
         super.handleOnDestroy();
