@@ -4,31 +4,37 @@ import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
-import android.media.MediaCodec;
-import android.media.MediaFormat;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
+import org.concentus.OpusDecoder;
+
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Low-latency native Opus playback for Xiaozhi WebSocket audio frames.
- * Xiaozhi protocol v1 sends one raw Opus packet per binary WebSocket frame.
+ * Reliable native playback for Xiaozhi protocol-v1 audio.
+ *
+ * Xiaozhi sends one raw Opus packet in each binary WebSocket frame.  Android's
+ * MediaCodec Opus support varies by vendor/device when fed a headerless live
+ * packet stream, so Mori decodes the raw packets with Concentus (pure Java
+ * Opus) and sends the resulting PCM directly to AudioTrack.
  */
 final class NativeOpusPlayer {
     interface ErrorListener {
         void onError(String message);
     }
 
-    private static final String OPUS_MIME = MediaFormat.MIMETYPE_AUDIO_OPUS;
+    interface StateListener {
+        void onState(String state, int sampleRate, int channels, long packetCount);
+    }
+
     private static final int DEFAULT_SAMPLE_RATE = 24000;
     private static final int DEFAULT_CHANNELS = 1;
+    private static final int DEFAULT_FRAME_DURATION_MS = 60;
     private static final int MAX_PACKET_BYTES = 64 * 1024;
-    private static final long SEEK_PRE_ROLL_NS = 80_000_000L;
+    private static final int MAX_OPUS_FRAME_MS = 120;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "Mori-Xiaozhi-Audio");
@@ -36,42 +42,50 @@ final class NativeOpusPlayer {
         return thread;
     });
     private final ErrorListener errorListener;
+    private final StateListener stateListener;
+    private final AtomicInteger playbackGeneration = new AtomicInteger(1);
 
-    private MediaCodec decoder;
+    private OpusDecoder decoder;
     private AudioTrack audioTrack;
-    private int configuredInputRate = 0;
-    private int configuredChannels = 0;
-    private int outputRate = 0;
-    private int outputChannels = 0;
-    private long presentationUs = 0;
+    private int sampleRate = 0;
+    private int channels = 0;
+    private int frameDurationMs = DEFAULT_FRAME_DURATION_MS;
     private boolean enabled = true;
     private boolean released = false;
     private boolean reportedFailure = false;
+    private boolean announcedPlaying = false;
+    private long packetCount = 0;
 
-    NativeOpusPlayer(ErrorListener errorListener) {
+    NativeOpusPlayer(ErrorListener errorListener, StateListener stateListener) {
         this.errorListener = errorListener;
+        this.stateListener = stateListener;
     }
 
-    void configure(int sampleRate, int channels) {
-        final int safeRate = sanitizeRate(sampleRate);
-        final int safeChannels = channels == 2 ? 2 : 1;
+    void configure(int requestedRate, int requestedChannels, int requestedFrameDurationMs) {
+        final int safeRate = sanitizeRate(requestedRate);
+        final int safeChannels = requestedChannels == 2 ? 2 : 1;
+        final int safeFrameDuration = sanitizeFrameDuration(requestedFrameDurationMs);
+        final int generation = playbackGeneration.incrementAndGet();
         execute(() -> {
-            if (decoder != null && configuredInputRate == safeRate && configuredChannels == safeChannels) return;
-            configureInternal(safeRate, safeChannels);
+            if (generation != playbackGeneration.get()) return;
+            if (decoder != null && sampleRate == safeRate && channels == safeChannels && frameDurationMs == safeFrameDuration) return;
+            configureInternal(safeRate, safeChannels, safeFrameDuration);
         });
     }
 
     void enqueue(byte[] packet) {
         if (packet == null || packet.length == 0 || packet.length > MAX_PACKET_BYTES) return;
         final byte[] copy = Arrays.copyOf(packet, packet.length);
+        final int generation = playbackGeneration.get();
         execute(() -> {
-            if (!enabled) return;
-            if (decoder == null) configureInternal(DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS);
-            decodePacket(copy);
+            if (!enabled || generation != playbackGeneration.get()) return;
+            if (decoder == null) configureInternal(DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS, DEFAULT_FRAME_DURATION_MS);
+            decodeAndPlay(copy, generation);
         });
     }
 
     void setEnabled(boolean next) {
+        if (!next) playbackGeneration.incrementAndGet();
         execute(() -> {
             enabled = next;
             if (!next) stopInternal();
@@ -79,10 +93,12 @@ final class NativeOpusPlayer {
     }
 
     void stop() {
+        playbackGeneration.incrementAndGet();
         execute(this::stopInternal);
     }
 
     void release() {
+        playbackGeneration.incrementAndGet();
         execute(() -> {
             released = true;
             releaseInternal();
@@ -112,116 +128,88 @@ final class NativeOpusPlayer {
         }
     }
 
-    private void configureInternal(int sampleRate, int channels) {
+    private void configureInternal(int rate, int channelCount, int durationMs) {
         releaseDecoderOnly();
-        presentationUs = 0;
-        reportedFailure = false;
-        try {
-            MediaFormat format = MediaFormat.createAudioFormat(OPUS_MIME, sampleRate, channels);
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_PACKET_BYTES);
-            format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT);
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(buildOpusHead(sampleRate, channels)));
-            format.setByteBuffer("csd-1", nativeLong(0L));
-            format.setByteBuffer("csd-2", nativeLong(SEEK_PRE_ROLL_NS));
-
-            decoder = MediaCodec.createDecoderByType(OPUS_MIME);
-            decoder.configure(format, null, null, 0);
-            decoder.start();
-            configuredInputRate = sampleRate;
-            configuredChannels = channels;
-        } catch (Throwable throwable) {
-            releaseDecoderOnly();
-            throw new IllegalStateException("Android could not initialize its Opus decoder", throwable);
-        }
-    }
-
-    private void decodePacket(byte[] packet) {
-        MediaCodec current = decoder;
-        if (current == null) return;
-
-        int inputIndex = -1;
-        for (int attempt = 0; attempt < 4 && inputIndex < 0; attempt += 1) {
-            inputIndex = current.dequeueInputBuffer(attempt == 0 ? 0 : 4_000);
-            if (inputIndex < 0) drainOutput(current, false);
-        }
-        if (inputIndex < 0) {
-            // Do not poison the whole conversation if the decoder is briefly back-pressured.
-            drainOutput(current, true);
-            inputIndex = current.dequeueInputBuffer(6_000);
-        }
-        if (inputIndex < 0) return;
-
-        ByteBuffer input = current.getInputBuffer(inputIndex);
-        if (input == null || packet.length > input.capacity()) {
-            current.queueInputBuffer(inputIndex, 0, 0, presentationUs, 0);
-            throw new IllegalStateException("Xiaozhi sent an Opus packet larger than the Android decoder input buffer");
-        }
-        input.clear();
-        input.put(packet);
-        current.queueInputBuffer(inputIndex, 0, packet.length, presentationUs, 0);
-        presentationUs += 60_000L;
-        drainOutput(current, true);
-    }
-
-    private void drainOutput(MediaCodec current, boolean allowWait) {
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        boolean first = true;
-        while (true) {
-            int outputIndex = current.dequeueOutputBuffer(info, allowWait && first ? 4_000 : 0);
-            first = false;
-            if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                ensureTrack(current.getOutputFormat());
-                continue;
-            }
-            if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) return;
-            if (outputIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) continue;
-            if (outputIndex < 0) return;
-
-            try {
-                if (info.size > 0 && enabled) {
-                    ensureTrack(current.getOutputFormat(outputIndex));
-                    ByteBuffer output = current.getOutputBuffer(outputIndex);
-                    if (output != null) {
-                        output.position(info.offset);
-                        output.limit(info.offset + info.size);
-                        byte[] pcm = new byte[info.size];
-                        output.get(pcm);
-                        AudioTrack track = audioTrack;
-                        if (track != null) {
-                            if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) track.play();
-                            int written = track.write(pcm, 0, pcm.length, AudioTrack.WRITE_BLOCKING);
-                            if (written < 0) throw new IllegalStateException("Android audio output rejected decoded PCM (" + written + ")");
-                        }
-                    }
-                }
-            } finally {
-                current.releaseOutputBuffer(outputIndex, false);
-            }
-        }
-    }
-
-    private void ensureTrack(MediaFormat format) {
-        int rate = format.containsKey(MediaFormat.KEY_SAMPLE_RATE)
-            ? format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            : (configuredInputRate > 0 ? configuredInputRate : 48000);
-        int channels = format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)
-            ? format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            : (configuredChannels > 0 ? configuredChannels : 1);
-        channels = channels == 2 ? 2 : 1;
-
-        if (audioTrack != null && outputRate == rate && outputChannels == channels) return;
         releaseTrackOnly();
+        reportedFailure = false;
+        announcedPlaying = false;
+        packetCount = 0;
+        sampleRate = rate;
+        channels = channelCount;
+        frameDurationMs = durationMs;
 
-        int channelMask = channels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
+        try {
+            decoder = new OpusDecoder(rate, channelCount);
+        } catch (Throwable throwable) {
+            throw new IllegalStateException("Could not initialize the Opus decoder", throwable);
+        }
+        ensureTrack(rate, channelCount);
+        emitState("ready");
+    }
+
+    private void decodeAndPlay(byte[] packet, int generation) {
+        OpusDecoder currentDecoder = decoder;
+        if (currentDecoder == null || !enabled || generation != playbackGeneration.get()) return;
+
+        // Opus packets may legally contain up to 120 ms of audio.  Xiaozhi
+        // normally uses 60 ms, but allocating the protocol maximum makes the
+        // decoder robust to server-side packet aggregation.
+        int maxSamplesPerChannel = Math.max(sampleRate * MAX_OPUS_FRAME_MS / 1000,
+            sampleRate * frameDurationMs / 1000);
+        short[] pcm = new short[maxSamplesPerChannel * channels];
+        final int decodedSamplesPerChannel;
+        try {
+            decodedSamplesPerChannel = currentDecoder.decode(
+                packet, 0, packet.length, pcm, 0, maxSamplesPerChannel, false
+            );
+        } catch (Throwable throwable) {
+            throw new IllegalStateException("Xiaozhi sent an Opus packet that could not be decoded", throwable);
+        }
+        if (decodedSamplesPerChannel <= 0) return;
+        if (!enabled || generation != playbackGeneration.get()) return;
+
+        AudioTrack track = audioTrack;
+        if (track == null) {
+            ensureTrack(sampleRate, channels);
+            track = audioTrack;
+        }
+        if (track == null) throw new IllegalStateException("Android speaker output is unavailable");
+
+        if (track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) track.play();
+        int totalSamples = decodedSamplesPerChannel * channels;
+        int offset = 0;
+        while (offset < totalSamples && enabled && generation == playbackGeneration.get()) {
+            int written = track.write(pcm, offset, totalSamples - offset, AudioTrack.WRITE_BLOCKING);
+            if (written < 0) throw new IllegalStateException("Android audio output rejected decoded PCM (" + written + ")");
+            if (written == 0) break;
+            offset += written;
+        }
+
+        packetCount += 1;
+        if (!announcedPlaying && offset > 0) {
+            announcedPlaying = true;
+            emitState("playing");
+        } else if (packetCount % 50 == 0) {
+            emitState("playing");
+        }
+    }
+
+    private void ensureTrack(int rate, int channelCount) {
+        int safeChannels = channelCount == 2 ? 2 : 1;
+        int channelMask = safeChannels == 2 ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
         int min = AudioTrack.getMinBufferSize(rate, channelMask, AudioFormat.ENCODING_PCM_16BIT);
-        int frameBytes = channels * 2;
-        int target = Math.max(min > 0 ? min : 0, Math.max(rate * frameBytes / 3, 4096));
+        int frameBytes = safeChannels * 2;
+        // Keep about 300 ms buffered: enough to absorb bursty WebSocket delivery
+        // without adding a large conversational delay.
+        int target = Math.max(min > 0 ? min : 0, Math.max(rate * frameBytes * 3 / 10, 4096));
 
         AudioAttributes attributes = new AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            // USAGE_MEDIA follows the phone's normal media/speaker/Bluetooth
+            // route. USAGE_ASSISTANT is inconsistently routed by some vendors.
+            .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build();
-        AudioFormat audioFormat = new AudioFormat.Builder()
+        AudioFormat format = new AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setSampleRate(rate)
             .setChannelMask(channelMask)
@@ -229,7 +217,7 @@ final class NativeOpusPlayer {
 
         audioTrack = new AudioTrack(
             attributes,
-            audioFormat,
+            format,
             target,
             AudioTrack.MODE_STREAM,
             AudioManager.AUDIO_SESSION_ID_GENERATE
@@ -238,48 +226,48 @@ final class NativeOpusPlayer {
             releaseTrackOnly();
             throw new IllegalStateException("Android speaker output could not be initialized");
         }
-        outputRate = rate;
-        outputChannels = channels;
+        audioTrack.setVolume(1.0f);
     }
 
     private void stopInternal() {
-        presentationUs = 0;
+        announcedPlaying = false;
+        packetCount = 0;
         if (decoder != null) {
-            try { decoder.flush(); } catch (Throwable ignored) { }
+            try { decoder.resetState(); } catch (Throwable ignored) { }
         }
         if (audioTrack != null) {
             try { audioTrack.pause(); } catch (Throwable ignored) { }
             try { audioTrack.flush(); } catch (Throwable ignored) { }
         }
+        emitState("stopped");
     }
 
     private void releaseInternal() {
         releaseDecoderOnly();
         releaseTrackOnly();
-        configuredInputRate = 0;
-        configuredChannels = 0;
-        presentationUs = 0;
+        sampleRate = 0;
+        channels = 0;
+        frameDurationMs = DEFAULT_FRAME_DURATION_MS;
+        announcedPlaying = false;
+        packetCount = 0;
     }
 
     private void releaseDecoderOnly() {
-        MediaCodec current = decoder;
         decoder = null;
-        if (current != null) {
-            try { current.stop(); } catch (Throwable ignored) { }
-            try { current.release(); } catch (Throwable ignored) { }
-        }
     }
 
     private void releaseTrackOnly() {
         AudioTrack track = audioTrack;
         audioTrack = null;
-        outputRate = 0;
-        outputChannels = 0;
         if (track != null) {
             try { track.pause(); } catch (Throwable ignored) { }
             try { track.flush(); } catch (Throwable ignored) { }
             try { track.release(); } catch (Throwable ignored) { }
         }
+    }
+
+    private void emitState(String state) {
+        if (stateListener != null) stateListener.onState(state, sampleRate, channels, packetCount);
     }
 
     private void reportError(String message) {
@@ -301,36 +289,21 @@ final class NativeOpusPlayer {
         }
     }
 
-    private static byte[] buildOpusHead(int sampleRate, int channels) {
-        byte[] header = new byte[19];
-        byte[] magic = "OpusHead".getBytes(StandardCharsets.US_ASCII);
-        System.arraycopy(magic, 0, header, 0, magic.length);
-        header[8] = 1; // OpusHead version.
-        header[9] = (byte) channels;
-        putLittleEndian16(header, 10, 0); // No pre-skip for packet-stream playback.
-        putLittleEndian32(header, 12, sampleRate);
-        putLittleEndian16(header, 16, 0); // Output gain.
-        header[18] = 0; // Channel mapping family 0 (mono/stereo).
-        return header;
-    }
-
-    private static ByteBuffer nativeLong(long value) {
-        ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder());
-        buffer.putLong(value);
-        buffer.flip();
-        return buffer;
-    }
-
-    private static void putLittleEndian16(byte[] target, int offset, int value) {
-        target[offset] = (byte) (value & 0xff);
-        target[offset + 1] = (byte) ((value >>> 8) & 0xff);
-    }
-
-    private static void putLittleEndian32(byte[] target, int offset, int value) {
-        target[offset] = (byte) (value & 0xff);
-        target[offset + 1] = (byte) ((value >>> 8) & 0xff);
-        target[offset + 2] = (byte) ((value >>> 16) & 0xff);
-        target[offset + 3] = (byte) ((value >>> 24) & 0xff);
+    private static int sanitizeFrameDuration(int durationMs) {
+        switch (durationMs) {
+            case 3:   // 2.5 ms may be rounded by JSON producers.
+            case 5:
+            case 10:
+            case 20:
+            case 40:
+            case 60:
+            case 80:
+            case 100:
+            case 120:
+                return durationMs;
+            default:
+                return DEFAULT_FRAME_DURATION_MS;
+        }
     }
 
     private static String cleanMessage(Throwable throwable) {

@@ -21,6 +21,13 @@ export interface NativeXiaozhiAudioErrorEvent {
   message: string;
 }
 
+export interface NativeXiaozhiAudioStateEvent {
+  state: 'ready' | 'playing' | 'stopped' | string;
+  sampleRate?: number;
+  channels?: number;
+  packetCount?: number;
+}
+
 interface NativeXiaozhiPlugin {
   connect(options: { url: string; deviceId: string; clientId: string; token: string }): Promise<{ connected: boolean }>;
   send(options: { text: string }): Promise<void>;
@@ -31,6 +38,7 @@ interface NativeXiaozhiPlugin {
   addListener(eventName: 'error', listener: (event: NativeXiaozhiErrorEvent) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'closed', listener: (event: NativeXiaozhiClosedEvent) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'audioError', listener: (event: NativeXiaozhiAudioErrorEvent) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'audioState', listener: (event: NativeXiaozhiAudioStateEvent) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'state', listener: (event: { state: string; reconnected?: boolean; attempt?: number; delayMs?: number; reason?: string }) => void): Promise<PluginListenerHandle>;
 }
 

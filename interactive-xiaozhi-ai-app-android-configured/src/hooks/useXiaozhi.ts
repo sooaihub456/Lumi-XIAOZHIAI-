@@ -10,6 +10,7 @@ import type { ConnectionConfig, ConnectionStatus, XiaozhiEvent } from '../types'
 export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: MoriToolHandler) {
   const [status, setStatus] = useState<ConnectionStatus>('demo');
   const [error, setError] = useState('');
+  const [audioState, setAudioState] = useState<'idle' | 'ready' | 'playing'>('idle');
   const socket = useRef<WebSocket | null>(null);
   const session = useRef('');
   const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -44,6 +45,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     session.current = '';
     audio.current?.stop();
     setStatus('demo');
+    setAudioState('idle');
     setError('');
   }, [removeNativeListeners]);
 
@@ -149,7 +151,19 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
             fail(`Xiaozhi closed the connection${event.code ? ` (code ${event.code})` : ''}${reason ? `: ${reason}` : '.'}`);
           }));
           listeners.push(await NativeXiaozhi.addListener('audioError', (event) => {
+            setAudioState('idle');
             setError(event.message || 'Android could not play the Xiaozhi voice reply. Text chat is still available.');
+          }));
+          listeners.push(await NativeXiaozhi.addListener('audioState', (event) => {
+            if (generation !== nativeGeneration.current || failed) return;
+            if (event.state === 'playing') {
+              setAudioState('playing');
+              setError('');
+            } else if (event.state === 'ready') {
+              setAudioState('ready');
+            } else if (event.state === 'stopped') {
+              setAudioState('idle');
+            }
           }));
           listeners.push(await NativeXiaozhi.addListener('state', (event) => {
             if (generation !== nativeGeneration.current || failed) return;
@@ -157,6 +171,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
               nativeActive.current = false;
               session.current = '';
               audio.current?.stop();
+              setAudioState('idle');
               setStatus('connecting');
               setError('');
             } else if (event.state === 'open') {
@@ -298,5 +313,5 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current = null;
   }, [removeNativeListeners]);
 
-  return { status, error, connect, disconnect, sendText, interrupt, getAudio, unlockAudio, setAudioEnabled };
+  return { status, error, audioState, connect, disconnect, sendText, interrupt, getAudio, unlockAudio, setAudioEnabled };
 }

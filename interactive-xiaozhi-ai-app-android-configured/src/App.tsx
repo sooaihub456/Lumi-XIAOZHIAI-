@@ -19,6 +19,7 @@ import { desktopBridge } from './lib/desktop';
 import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
 import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
+import { isNative } from './lib/platform';
 import type { Activity, ConnectionConfig, Emotion, Gesture, Memory, Message, Panel, Profile, WorldId, XiaozhiEvent } from './types';
 
 const panelTitles = {
@@ -292,6 +293,13 @@ export default function App() {
   }, []);
 
   function speak(text: string, explicit = false) {
+    // Never replace Xiaozhi's streamed voice with the phone's synthetic TTS.
+    // The old Read Aloud path was the "robotic" voice users were hearing even
+    // while a live Xiaozhi session was connected.
+    if (isNative && xiaozhi.status === 'connected') {
+      if (explicit) notify("Xiaozhi's real voice plays live with each reply. System text-to-speech replay is disabled while connected.");
+      return;
+    }
     if (!voiceRef.current && !explicit) return;
     if (explicit && !voiceRef.current) setVoiceEnabled(true);
     void speakText(text, () => setSpeaking(true), () => setSpeaking(false)).catch(() => {
@@ -307,10 +315,15 @@ export default function App() {
     if (requestedActivity) {
       stopSpeech();
       doActivity(requestedActivity);
-      const reply = requestedActivity === 'water' ? "A little water, a little patience. Watch our plant grow each time I tend it." : requestedActivity === 'read' ? "A quiet moment with a good book. Come sit with me?" : requestedActivity === 'tea' ? "Putting the world on pause for a cup of tea. You're welcome to join me." : requestedActivity === 'rest' ? "Finding my favorite spot. Even a little robot needs a little rest." : "A little wander sounds lovely. You can also tap the floor to show me where to go.";
-      setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }, { id: uid(), role: 'assistant', text: reply, timestamp: Date.now() }]);
-      speak(reply);
-      return;
+      // In local preview we still provide the small built-in response. During a
+      // real Xiaozhi session, continue below so Xiaozhi itself answers and its
+      // actual configured voice is streamed back to the phone.
+      if (xiaozhi.status !== 'connected') {
+        const reply = requestedActivity === 'water' ? "A little water, a little patience. Watch our plant grow each time I tend it." : requestedActivity === 'read' ? "A quiet moment with a good book. Come sit with me?" : requestedActivity === 'tea' ? "Putting the world on pause for a cup of tea. You're welcome to join me." : requestedActivity === 'rest' ? "Finding my favorite spot. Even a little robot needs a little rest." : "A little wander sounds lovely. You can also tap the floor to show me where to go.";
+        setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }, { id: uid(), role: 'assistant', text: reply, timestamp: Date.now() }]);
+        speak(reply);
+        return;
+      }
     }
     const search = browserIntent(text, profile.companionName);
     if (search !== null && xiaozhi.status !== 'connected') {

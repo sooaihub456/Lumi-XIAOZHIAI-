@@ -29,10 +29,14 @@ export async function prepareAndroid() {
   const gradle = await readFile(gradlePath, 'utf8');
   let updated = gradle
     .replace(/versionCode\s+(?:=\s*)?\d+/, `versionCode ${buildNumber}`)
-    .replace(/versionName\s+(?:=\s*)?["'][^"']+["']/, `versionName "0.7.${buildNumber}-preview"`);
+    .replace(/versionName\s+(?:=\s*)?["'][^"']+["']/, `versionName "0.8.${buildNumber}-preview"`);
   // Native Android connects directly to Xiaozhi with authenticated WebSocket headers.
-  if (!updated.includes('com.squareup.okhttp3:okhttp')) {
-    updated = updated.replace(/dependencies\s*\{/, `dependencies {\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"`);
+  const nativeDependencies = [
+    ['com.squareup.okhttp3:okhttp', 'implementation "com.squareup.okhttp3:okhttp:4.12.0"'],
+    ['io.github.jaredmdobson:concentus', 'implementation "io.github.jaredmdobson:concentus:1.0.1"'],
+  ];
+  for (const [marker, declaration] of nativeDependencies) {
+    if (!updated.includes(marker)) updated = updated.replace(/dependencies\s*\{/, `dependencies {\n    ${declaration}`);
   }
   await writeFile(gradlePath, updated);
   run(process.execPath, [capacitor, 'sync', 'android']);

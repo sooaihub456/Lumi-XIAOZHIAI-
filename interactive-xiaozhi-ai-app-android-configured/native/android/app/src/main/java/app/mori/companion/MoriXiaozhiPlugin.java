@@ -60,6 +60,13 @@ public class MoriXiaozhiPlugin extends Plugin {
             JSObject event = new JSObject();
             event.put("message", message);
             notifyListeners("audioError", event);
+        }, (state, sampleRate, channels, packetCount) -> {
+            JSObject event = new JSObject();
+            event.put("state", state);
+            event.put("sampleRate", sampleRate);
+            event.put("channels", channels);
+            event.put("packetCount", packetCount);
+            notifyListeners("audioState", event);
         });
     }
 
@@ -71,7 +78,8 @@ public class MoriXiaozhiPlugin extends Plugin {
             if (params == null) return;
             int sampleRate = params.optInt("sample_rate", 24000);
             int channels = params.optInt("channels", 1);
-            if (audioPlayer != null) audioPlayer.configure(sampleRate, channels);
+            int frameDuration = params.optInt("frame_duration", 60);
+            if (audioPlayer != null) audioPlayer.configure(sampleRate, channels, frameDuration);
         } catch (Exception ignored) {
             // Not every JSON message carries audio settings.
         }
