@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { cp, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,8 +19,26 @@ export async function prepareAndroid() {
   if (!existsSync(capacitor)) throw new Error('Install the project dependencies first.');
 
   // Generate from the installed official template, including its matching Gradle wrapper.
-  if (!existsSync(resolve(root, 'android/app/build.gradle'))) run(process.execPath, [capacitor, 'add', 'android']);
-  await cp(resolve(root, 'native/android'), resolve(root, 'android'), { recursive: true });
+  if (!existsSync(resolve(root, 'android/app/build.gradle'))) {
+    run(process.execPath, [capacitor, 'add', 'android']);
+  }
+  
+  // Capacitor creates its own launcher background resource.
+  // Mori also defines ic_launcher_background in colors.xml.
+  // Remove Capacitor's duplicate before applying Mori's native resources.
+  await rm(
+    resolve(
+      root,
+      'android/app/src/main/res/values/ic_launcher_background.xml'
+    ),
+    { force: true }
+  );
+  
+  await cp(
+    resolve(root, 'native/android'),
+    resolve(root, 'android'),
+    { recursive: true }
+  );
   const gradlePath = resolve(root, 'android/app/build.gradle');
   const buildNumber = Number(process.env.MORI_VERSION_CODE || process.env.GITHUB_RUN_NUMBER || '1');
   if (!Number.isInteger(buildNumber) || buildNumber < 1 || buildNumber > 2100000000) throw new Error('MORI_VERSION_CODE must be a positive Android version code.');
