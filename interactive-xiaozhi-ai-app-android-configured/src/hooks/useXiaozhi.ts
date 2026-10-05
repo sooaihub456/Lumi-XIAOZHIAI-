@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PluginListenerHandle } from '@capacitor/core';
+import { SpeechRecognition as NativeRecognition } from '@capgo/capacitor-speech-recognition';
 import { XiaozhiAudio } from '../lib/audio';
 import { isNative } from '../lib/platform';
 import { isDesktop } from '../lib/desktop';
@@ -11,6 +12,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
   const [status, setStatus] = useState<ConnectionStatus>('demo');
   const [error, setError] = useState('');
   const [audioState, setAudioState] = useState<'idle' | 'ready' | 'playing'>('idle');
+  const [inputState, setInputState] = useState<'idle' | 'listening'>('idle');
   const socket = useRef<WebSocket | null>(null);
   const session = useRef('');
   const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -46,6 +48,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current?.stop();
     setStatus('demo');
     setAudioState('idle');
+    setInputState('idle');
     setError('');
   }, [removeNativeListeners]);
 
@@ -165,6 +168,15 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
               setAudioState('idle');
             }
           }));
+          listeners.push(await NativeXiaozhi.addListener('inputState', (event) => {
+            if (generation !== nativeGeneration.current || failed) return;
+            setInputState(event.state === 'listening' ? 'listening' : 'idle');
+          }));
+          listeners.push(await NativeXiaozhi.addListener('inputError', (event) => {
+            if (generation !== nativeGeneration.current || failed) return;
+            setInputState('idle');
+            setError(event.message || 'Android microphone streaming to Xiaozhi stopped unexpectedly.');
+          }));
           listeners.push(await NativeXiaozhi.addListener('state', (event) => {
             if (generation !== nativeGeneration.current || failed) return;
             if (event.state === 'reconnecting' || event.state === 'connecting') {
@@ -172,6 +184,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
               session.current = '';
               audio.current?.stop();
               setAudioState('idle');
+              setInputState('idle');
               setStatus('connecting');
               setError('');
             } else if (event.state === 'open') {
@@ -275,23 +288,52 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
 
   const sendText = useCallback((text: string) => {
     if (status !== 'connected') return false;
+
+    // The official Xiaozhi protocol reserves listen/state=detect for an actual
+    // wake word. Recent Xiaozhi servers reject long text injected through that
+    // field. Android therefore never sends user transcripts through detect;
+    // normal live turns use startListening() + raw Opus microphone frames.
+    if (isNative) return false;
+
+    // Legacy web/desktop bridge compatibility. Browser JavaScript cannot attach
+    // the Xiaozhi auth headers or provide the Android native Opus microphone
+    // path, so older bridge deployments may still implement text injection.
     const message = JSON.stringify({ session_id: session.current, type: 'listen', state: 'detect', text });
-    if (isNative) {
-      if (!nativeActive.current) return false;
-      void NativeXiaozhi.send({ text: message }).catch((cause) => {
-        setError(cause instanceof Error ? cause.message : 'The native Xiaozhi connection could not send your message.');
-        setStatus('error');
-      });
-      return true;
-    }
     if (socket.current?.readyState !== WebSocket.OPEN) return false;
     socket.current.send(message);
     return true;
   }, [status]);
 
-  // Same transport as a detected text turn, but callers may use this for
-  // hidden/background tool context without adding it to the visible user chat.
-  const sendContext = useCallback((text: string) => sendText(text), [sendText]);
+  const sendContext = useCallback((text: string) => {
+    if (isNative) return false;
+    return sendText(text);
+  }, [sendText]);
+
+  const startListening = useCallback(async (mode: 'auto' | 'manual' | 'realtime' = 'auto') => {
+    if (!isNative || status !== 'connected' || !nativeActive.current) return false;
+    try {
+      let permission = await NativeRecognition.checkPermissions();
+      if (permission.speechRecognition !== 'granted') permission = await NativeRecognition.requestPermissions();
+      if (permission.speechRecognition !== 'granted') {
+        setError('Microphone permission is needed for Xiaozhi voice chat. Allow it in Android Settings > Apps > Mori > Permissions.');
+        return false;
+      }
+      await NativeXiaozhi.startListening({ mode });
+      setInputState('listening');
+      setError('');
+      return true;
+    } catch (cause) {
+      setInputState('idle');
+      setError(cause instanceof Error ? cause.message : 'Could not start Xiaozhi microphone streaming.');
+      return false;
+    }
+  }, [status]);
+
+  const stopListening = useCallback(async () => {
+    if (!isNative) return;
+    setInputState('idle');
+    try { await NativeXiaozhi.stopListening(); } catch { /* Connection may already be reconnecting. */ }
+  }, []);
 
   const interrupt = useCallback(() => {
     audio.current?.stop();
@@ -317,5 +359,5 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current = null;
   }, [removeNativeListeners]);
 
-  return { status, error, audioState, connect, disconnect, sendText, sendContext, interrupt, getAudio, unlockAudio, setAudioEnabled };
+  return { status, error, audioState, inputState, connect, disconnect, sendText, sendContext, startListening, stopListening, interrupt, getAudio, unlockAudio, setAudioEnabled };
 }

@@ -52,7 +52,9 @@ public class MoriXiaozhiPlugin extends Plugin {
     private String savedClientId = "";
     private String savedToken = "";
     private String savedHello = "";
+    private String savedSessionId = "";
     private NativeOpusPlayer audioPlayer;
+    private NativeOpusRecorder micRecorder;
 
     @Override
     public void load() {
@@ -68,20 +70,68 @@ public class MoriXiaozhiPlugin extends Plugin {
             event.put("packetCount", packetCount);
             notifyListeners("audioState", event);
         });
+
+        micRecorder = new NativeOpusRecorder(packet -> {
+            WebSocket current;
+            synchronized (socketLock) { current = socket; }
+            return current != null && current.send(ByteString.of(packet));
+        }, message -> {
+            JSObject event = new JSObject();
+            event.put("message", message);
+            notifyListeners("inputError", event);
+        }, state -> {
+            JSObject event = new JSObject();
+            event.put("state", state);
+            notifyListeners("inputState", event);
+        });
     }
 
-    private void inspectAudioSettings(String text) {
+    private void inspectServerMessage(String text) {
         try {
             JSONObject message = new JSONObject(text);
-            if (!"hello".equals(message.optString("type"))) return;
-            JSONObject params = message.optJSONObject("audio_params");
-            if (params == null) return;
-            int sampleRate = params.optInt("sample_rate", 24000);
-            int channels = params.optInt("channels", 1);
-            int frameDuration = params.optInt("frame_duration", 60);
-            if (audioPlayer != null) audioPlayer.configure(sampleRate, channels, frameDuration);
+            String type = message.optString("type");
+            if ("hello".equals(type)) {
+                synchronized (socketLock) { savedSessionId = message.optString("session_id", ""); }
+                JSONObject params = message.optJSONObject("audio_params");
+                if (params != null) {
+                    int sampleRate = params.optInt("sample_rate", 24000);
+                    int channels = params.optInt("channels", 1);
+                    int frameDuration = params.optInt("frame_duration", 60);
+                    if (audioPlayer != null) audioPlayer.configure(sampleRate, channels, frameDuration);
+                }
+                return;
+            }
+            if ("tts".equals(type) && "start".equals(message.optString("state"))) {
+                // Xiaozhi has accepted the user's utterance and is about to talk.
+                // Stop the local microphone immediately so speaker audio is never
+                // fed back into the upstream recognizer. The server already ended
+                // this auto-listen turn, so do not send another listen/stop here.
+                if (micRecorder != null) micRecorder.stop();
+            } else if ("goodbye".equals(type)) {
+                if (micRecorder != null) micRecorder.stop();
+            }
         } catch (Exception ignored) {
-            // Not every JSON message carries audio settings.
+            // Ordinary JSON messages need no native control handling.
+        }
+    }
+
+    private boolean sendListenState(String state, String mode) {
+        final WebSocket current;
+        final String sessionId;
+        synchronized (socketLock) {
+            current = socket;
+            sessionId = savedSessionId;
+        }
+        if (current == null || sessionId == null || sessionId.isEmpty()) return false;
+        try {
+            JSONObject message = new JSONObject();
+            message.put("session_id", sessionId);
+            message.put("type", "listen");
+            message.put("state", state);
+            if (mode != null && !mode.isEmpty()) message.put("mode", mode);
+            return current.send(message.toString());
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
@@ -190,6 +240,7 @@ public class MoriXiaozhiPlugin extends Plugin {
             current = socket;
             socket = null;
             savedHello = "";
+            savedSessionId = "";
             if (clearCredentials) {
                 savedUrl = "";
                 savedDeviceId = "";
@@ -197,6 +248,7 @@ public class MoriXiaozhiPlugin extends Plugin {
                 savedToken = "";
             }
         }
+        if (micRecorder != null) micRecorder.stop();
         if (current != null) current.close(code, reason);
     }
 
@@ -206,13 +258,17 @@ public class MoriXiaozhiPlugin extends Plugin {
             reconnectEnabled = false;
             clearReconnectTaskLocked();
             socket = null;
+            savedSessionId = "";
         }
+        if (micRecorder != null) micRecorder.stop();
         JSObject event = new JSObject();
         event.put("message", message);
         emit("error", event, candidate);
     }
 
     private void scheduleReconnect(long candidate, PluginCall initialCall, AtomicBoolean settled, String cause) {
+        if (micRecorder != null) micRecorder.stop();
+        synchronized (socketLock) { if (candidate == generation) savedSessionId = ""; }
         final int attempt;
         final long delayMs;
         synchronized (socketLock) {
@@ -307,7 +363,7 @@ public class MoriXiaozhiPlugin extends Plugin {
             @Override
             public void onMessage(WebSocket webSocket, String text) {
                 if (!isCurrent(candidate)) return;
-                inspectAudioSettings(text);
+                inspectServerMessage(text);
                 if (text.length() > MAX_TEXT_FRAME_LENGTH) {
                     webSocket.close(1009, "Message too large");
                     return;
@@ -400,6 +456,7 @@ public class MoriXiaozhiPlugin extends Plugin {
             savedClientId = clientId;
             savedToken = token;
             savedHello = "";
+            savedSessionId = "";
         }
 
         AtomicBoolean settled = new AtomicBoolean(false);
@@ -431,6 +488,41 @@ public class MoriXiaozhiPlugin extends Plugin {
         call.resolve();
     }
 
+
+    @PluginMethod
+    public void startListening(PluginCall call) {
+        String mode = call.getString("mode", "auto");
+        if (!"auto".equals(mode) && !"manual".equals(mode) && !"realtime".equals(mode)) mode = "auto";
+        if (micRecorder == null) {
+            call.reject("Android microphone streaming is unavailable.");
+            return;
+        }
+        if (micRecorder.isRunning()) {
+            call.resolve();
+            return;
+        }
+        if (!sendListenState("start", mode)) {
+            call.reject("Xiaozhi is not ready to listen yet. Wait for the connection to finish and try again.");
+            return;
+        }
+        try {
+            micRecorder.start();
+            call.resolve();
+        } catch (Throwable throwable) {
+            sendListenState("stop", null);
+            String detail = throwable.getMessage();
+            if (detail == null || detail.trim().isEmpty()) detail = throwable.getClass().getSimpleName();
+            call.reject("Could not start the Android microphone for Xiaozhi: " + detail);
+        }
+    }
+
+    @PluginMethod
+    public void stopListening(PluginCall call) {
+        if (micRecorder != null) micRecorder.stop();
+        sendListenState("stop", null);
+        call.resolve();
+    }
+
     @PluginMethod
     public void stopAudio(PluginCall call) {
         if (audioPlayer != null) audioPlayer.stop();
@@ -457,6 +549,10 @@ public class MoriXiaozhiPlugin extends Plugin {
         if (audioPlayer != null) {
             audioPlayer.release();
             audioPlayer = null;
+        }
+        if (micRecorder != null) {
+            micRecorder.release();
+            micRecorder = null;
         }
         reconnectExecutor.shutdownNow();
         client.dispatcher().executorService().shutdown();

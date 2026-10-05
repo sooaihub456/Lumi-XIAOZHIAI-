@@ -48,6 +48,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(() => readStored('mori-voice', true));
   const [continuousListening, setContinuousListening] = useState(() => readStored('mori-continuous-listening', false));
+  const [nativeMicSession, setNativeMicSession] = useState(false);
   const [gentleMotion, setGentleMotion] = useState(() => readStored('mori-motion', false));
   const [panel, setPanel] = useState<Panel>(null);
   const [mobileChat, setMobileChat] = useState(false);
@@ -192,7 +193,10 @@ export default function App() {
       }
     }
     if (event.type === 'tts') {
-      if (event.state === 'start') setSpeaking(true);
+      if (event.state === 'start') {
+        setSpeaking(true);
+        if (isNative && !continuousListening) setNativeMicSession(false);
+      }
       if (event.state === 'sentence_start' && event.text) {
         clearTimeout(responseTimeout.current);
         const text = event.text;
@@ -215,6 +219,7 @@ export default function App() {
     }
     if (event.type === 'stt' && event.text && event.text !== lastSent.current && !event.text.startsWith('[BACKGROUND BROWSER RESEARCH')) {
       const text = event.text;
+      setBusy(true);
       lastSent.current = text;
       setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }]);
     }
@@ -223,11 +228,20 @@ export default function App() {
       if (next && ['wave', 'hug', 'dance', 'breathe', 'idle'].includes(next)) playGesture(next as Gesture);
       if (event.payload?.emotion) setEmotion(normalizeEmotion(event.payload.emotion));
     }
-    if (event.type === 'alert' && event.message) notify(event.message);
+    if (event.type === 'alert' && event.message) {
+      // Old builds injected full transcripts through listen/state=detect. Current
+      // Android builds stream real Opus microphone audio instead, but ignore a
+      // delayed/stale copy of that legacy server warning if one is still queued.
+      if (!/detect[\s\S]*(wake\s*words?|唤醒词)/i.test(event.message)) notify(event.message);
+    }
   }
 
   const xiaozhi = useXiaozhi(handleXiaozhiEvent, handleTool);
   const voice = useVoice((text) => sendMessage(text), notify, { continuous: continuousListening, paused: busy || speaking });
+  const nativeLiveMic = isNative && xiaozhi.status === 'connected';
+  const microphoneActive = nativeLiveMic ? nativeMicSession : voice.active;
+  const microphoneListening = nativeLiveMic ? xiaozhi.inputState === 'listening' : voice.listening;
+  const microphoneInterim = nativeLiveMic ? '' : voice.interim;
 
   function compactResearchResult(result: unknown) {
     const json = JSON.stringify(result);
@@ -292,6 +306,17 @@ export default function App() {
     clearTimeout(researchDeliveryTimer.current);
     if (!pendingResearchContexts.length || busy || speaking || xiaozhi.status !== 'connected') return;
 
+    // The official Xiaozhi WebSocket has no generic long-text input message.
+    // Never misuse wake-word detect to push background research into Android.
+    // Keep the result cached/visible for the next live voice turn instead.
+    if (isNative) {
+      setPendingResearchContexts((previous) => previous.slice(1));
+      setResearch((previous) => previous && previous.status === 'ready'
+        ? { ...previous, detail: 'Research is ready in the computer. Ask Lumi about it with the microphone.' }
+        : previous);
+      return;
+    }
+
     const deliver = () => {
       const context = pendingResearchContexts[0];
       if (!context) return;
@@ -314,20 +339,33 @@ export default function App() {
     // In hands-free mode give the user a short grace period to start speaking.
     // If they begin a turn, `busy` changes and this timer is cancelled. Otherwise
     // Lumi automatically pauses the microphone and continues with the research.
-    if (voice.listening) researchDeliveryTimer.current = setTimeout(deliver, 2500);
+    if (microphoneListening) researchDeliveryTimer.current = setTimeout(deliver, 2500);
     else deliver();
     return () => clearTimeout(researchDeliveryTimer.current);
-  }, [pendingResearchContexts, busy, speaking, voice.listening, xiaozhi.status]);
+  }, [pendingResearchContexts, busy, speaking, microphoneListening, xiaozhi.status]);
+
+  useEffect(() => {
+    if (!nativeLiveMic || !nativeMicSession || !continuousListening || busy || speaking || xiaozhi.inputState === 'listening') return;
+    const timer = setTimeout(() => {
+      void xiaozhi.startListening('auto').then((started) => {
+        if (!started) setNativeMicSession(false);
+      });
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [nativeLiveMic, nativeMicSession, continuousListening, busy, speaking, xiaozhi.inputState, xiaozhi.startListening]);
 
   useNativeApp(() => {
     if (computer) { closeComputer(); return true; }
     if (panel) { setPanel(null); return true; }
     if (immersive) { setImmersive(false); return true; }
     if (mobileChat) { setMobileChat(false); return true; }
+    if (nativeMicSession) { setNativeMicSession(false); void xiaozhi.stopListening(); return true; }
     if (voice.active) { voice.abort(); return true; }
     return false;
   }, () => {
     researchController.current?.abort();
+    setNativeMicSession(false);
+    void xiaozhi.stopListening();
     voice.abort();
     stopSpeech();
     xiaozhi.interrupt();
@@ -460,7 +498,13 @@ export default function App() {
     setEmotion('curious');
     if (xiaozhi.status === 'connected') {
       xiaozhi.interrupt();
-      if (!xiaozhi.sendText(text)) { setBusy(false); notify('The connection is not ready. Reconnect in Settings and try again.'); return; }
+      if (!xiaozhi.sendText(text)) {
+        setBusy(false);
+        notify(isNative
+          ? 'The official Xiaozhi server no longer accepts normal chat text through wake-word detect. Use the microphone; Mori now streams your real Opus voice directly to Xiaozhi.'
+          : 'The connection is not ready. Reconnect in Settings and try again.');
+        return;
+      }
       responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); notify('Xiaozhi is taking a little longer to respond. If browser research is running, you can keep talking while it finishes.'); }, search !== null ? 70000 : 45000);
     } else {
       const reply = demoReply(text, profile);
@@ -474,6 +518,29 @@ export default function App() {
   }
 
   function toggleVoiceInput() {
+    if (nativeLiveMic) {
+      if (nativeMicSession) {
+        setNativeMicSession(false);
+        void xiaozhi.stopListening();
+        setEmotion('calm');
+        return;
+      }
+      if (busy || speaking) {
+        clearTimeout(replyTimer.current);
+        clearTimeout(responseTimeout.current);
+        setBusy(false);
+        setSpeaking(false);
+        streamId.current = null;
+        xiaozhi.interrupt();
+      }
+      setNativeMicSession(true);
+      setEmotion('curious');
+      void xiaozhi.startListening('auto').then((started) => {
+        if (!started) setNativeMicSession(false);
+      });
+      return;
+    }
+
     if (voice.active) { voice.stop(); return; }
     if (busy) { clearTimeout(replyTimer.current); clearTimeout(responseTimeout.current); setBusy(false); streamId.current = null; }
     xiaozhi.interrupt();
@@ -485,7 +552,10 @@ export default function App() {
 
   function toggleContinuousListeningMode() {
     const next = !continuousListening;
-    if (!next && voice.active) voice.abort();
+    if (!next) {
+      if (nativeMicSession) { setNativeMicSession(false); void xiaozhi.stopListening(); }
+      if (voice.active) voice.abort();
+    }
     setContinuousListening(next);
     notify(next ? 'Hands-free listening is ready. Tap the microphone once and Lumi will keep listening, including in the computer.' : 'Hands-free listening is off.');
   }
@@ -498,6 +568,8 @@ export default function App() {
 
   function newConversation() {
     researchController.current?.abort();
+    setNativeMicSession(false);
+    void xiaozhi.stopListening();
     clearTimeout(replyTimer.current);
     clearTimeout(responseTimeout.current);
     clearTimeout(researchDeliveryTimer.current);
@@ -631,15 +703,15 @@ export default function App() {
               <AnimatePresence>{gesture === 'hug' && <motion.div className="floating-hearts" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} aria-hidden="true">{[0, 1, 2].map((index) => <motion.span key={index} initial={{ y: 20, opacity: 0, scale: 0.5 }} animate={{ y: -90 - index * 30, opacity: [0, 0.95, 0], scale: 1 }} transition={{ duration: 3.5, delay: index * 0.35, repeat: 1 }} style={{ left: `${35 + index * 15}%` }}><Heart size={22 + index * 6} fill="currentColor" strokeWidth={1} /></motion.span>)}</motion.div>}</AnimatePresence>
               <AnimatePresence>{gesture === 'breathe' && <motion.div className="breathing-indicator" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><span className={`breathing-circle ${breathIn ? 'inhale' : ''}`} /><span>{breathIn ? 'Breathe in, slowly...' : 'And gently let it go...'}</span></motion.div>}</AnimatePresence>
               <div className="world-bottom-shade" />
-              <div className="companion-status"><span className={speaking || voice.active ? 'animated-status' : ''} />{voice.listening ? "I'm listening" : voice.active && continuousListening ? "Hands-free listening is on" : speaking ? 'A little something to say' : living.activity !== 'idle' ? activityLabels[living.activity] : emotionLabels[emotion]}</div>
-              <div className="scene-footer"><div className="companion-identity"><p>YOUR LITTLE COMPANION</p><h2>{profile.companionName}<span><Sparkles size={16} strokeWidth={1.3} /></span></h2><span>A curious mind. A kind little heart.</span></div><div className="scene-actions"><button className="love-button" onClick={() => { playGesture('hug', 'love'); notify('A little love goes a long way.'); }} aria-label="Send a little love" title="Send a little love"><Heart size={20} strokeWidth={1.5} /></button><button className={`talk-button ${voice.active ? 'listening' : ''}`} onClick={toggleVoiceInput}>{voice.listening ? <span className="sound-bars"><i /><i /><i /><i /></span> : <Mic size={19} strokeWidth={1.7} />}<span>{voice.listening ? 'Listening...' : voice.active && continuousListening ? 'Hands-free on' : "Let's talk"}</span></button></div></div>
+              <div className="companion-status"><span className={speaking || microphoneActive ? 'animated-status' : ''} />{microphoneListening ? "I'm listening" : microphoneActive && continuousListening ? "Hands-free listening is on" : speaking ? 'A little something to say' : living.activity !== 'idle' ? activityLabels[living.activity] : emotionLabels[emotion]}</div>
+              <div className="scene-footer"><div className="companion-identity"><p>YOUR LITTLE COMPANION</p><h2>{profile.companionName}<span><Sparkles size={16} strokeWidth={1.3} /></span></h2><span>A curious mind. A kind little heart.</span></div><div className="scene-actions"><button className="love-button" onClick={() => { playGesture('hug', 'love'); notify('A little love goes a long way.'); }} aria-label="Send a little love" title="Send a little love"><Heart size={20} strokeWidth={1.5} /></button><button className={`talk-button ${microphoneActive ? 'listening' : ''}`} onClick={toggleVoiceInput}>{microphoneListening ? <span className="sound-bars"><i /><i /><i /><i /></span> : <Mic size={19} strokeWidth={1.7} />}<span>{microphoneListening ? 'Listening...' : microphoneActive && continuousListening ? 'Hands-free on' : "Let's talk"}</span></button></div></div>
               <button className="avatar-interact-hint" onClick={interactWithAvatar}><Hand size={12} />Tap {profile.companionName}. Make a little moment.</button>
             </motion.section>
             <div className="moment-bar"><span className="moment-label">The little things<span>make a big difference.</span></span><div className="moment-options"><button className={gesture === 'wave' ? 'active' : ''} onClick={() => playGesture('wave', 'happy')}><Hand size={17} strokeWidth={1.5} /><span>Say hello</span></button><button className={gesture === 'dance' ? 'active' : ''} onClick={() => playGesture('dance', 'excited')}><Music2 size={17} strokeWidth={1.5} /><span>Little dance</span></button><button className={gesture === 'breathe' ? 'active' : ''} onClick={() => playGesture('breathe', 'calm')}><Wind size={18} strokeWidth={1.5} /><span>Take a breath</span></button></div></div>
             <WorldDock activity={living.activity} onActivity={doActivity} onComputer={() => openComputer()} onCustomize={() => setPanel('worlds')} />
           </div>
           {mobileChat && <button className="chat-backdrop" aria-label="Close conversation" onClick={() => setMobileChat(false)} />}
-          <ChatPanel messages={messages} profile={profile} memories={memories} busy={busy} voiceActive={voice.active} listening={voice.listening} continuousListening={continuousListening} interim={voice.interim} status={xiaozhi.status} mobileOpen={mobileChat} onClose={() => setMobileChat(false)} onSend={sendMessage} onVoice={toggleVoiceInput} onSave={saveMemory} onSpeak={(text) => speak(text, true)} onNew={newConversation} onConnect={() => setPanel('settings')} notify={notify} />
+          <ChatPanel messages={messages} profile={profile} memories={memories} busy={busy} voiceActive={microphoneActive} listening={microphoneListening} continuousListening={continuousListening} interim={microphoneInterim} status={xiaozhi.status} mobileOpen={mobileChat} onClose={() => setMobileChat(false)} onSend={sendMessage} onVoice={toggleVoiceInput} onSave={saveMemory} onSpeak={(text) => speak(text, true)} onNew={newConversation} onConnect={() => setPanel('settings')} notify={notify} />
         </div>
 
         <button className="mobile-conversation-link" onClick={() => setMobileChat(true)}><LumiIcon size={36} color={colors[profile.color].main} /><span><strong>A little conversation</strong><span>{busy ? `${profile.companionName} is thinking...` : 'Big feelings. Small talk. All welcome.'}</span></span><ChevronRight size={18} /></button>
@@ -655,7 +727,7 @@ export default function App() {
         {panel === 'settings' && <SettingsPanel config={config} onConfig={setConfig} status={xiaozhi.status} error={xiaozhi.error} onConnect={() => { stopSpeech(); clearTimeout(replyTimer.current); setBusy(false); setSpeaking(false); xiaozhi.connect(config); void xiaozhi.unlockAudio().catch(() => {}); }} onDisconnect={xiaozhi.disconnect} voiceEnabled={voiceEnabled} onVoiceToggle={() => setVoiceEnabled(!voiceEnabled)} continuousListening={continuousListening} onContinuousListeningToggle={toggleContinuousListeningMode} reducedMotion={reducedMotion} onMotionToggle={() => { if (prefersReducedMotion) notify('Your device has Reduce Motion enabled. Change your system accessibility setting to allow more motion.'); else setGentleMotion(!gentleMotion); }} onReset={resetData} />}
       </PanelShell>}</AnimatePresence>
 
-      <AnimatePresence>{computer && <Computer name={profile.companionName} request={computer} onClose={closeComputer} onAsk={sendMessage} connected={xiaozhi.status === 'connected'} assistantBusy={busy} assistantReply={[...messages].reverse().find((message) => message.role === 'assistant')?.text || ''} voiceActive={voice.active} listening={voice.listening} continuousListening={continuousListening} voiceInterim={voice.interim} onVoice={toggleVoiceInput} onContinuousListeningToggle={toggleContinuousListeningMode} research={research} />}</AnimatePresence>
+      <AnimatePresence>{computer && <Computer name={profile.companionName} request={computer} onClose={closeComputer} onAsk={sendMessage} connected={xiaozhi.status === 'connected'} assistantBusy={busy} assistantReply={[...messages].reverse().find((message) => message.role === 'assistant')?.text || ''} voiceActive={microphoneActive} listening={microphoneListening} continuousListening={continuousListening} voiceInterim={microphoneInterim} onVoice={toggleVoiceInput} onContinuousListeningToggle={toggleContinuousListeningMode} research={research} />}</AnimatePresence>
 
       <AnimatePresence>{toast && <motion.div className="toast" key={toast.id} role="status" initial={{ opacity: 0, y: 20, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 10 }}><span className="toast-icon"><Check size={16} /></span><p>{toast.text}</p><button onClick={() => setToast(null)} aria-label="Dismiss notification"><X size={15} /></button></motion.div>}</AnimatePresence>
     </div>

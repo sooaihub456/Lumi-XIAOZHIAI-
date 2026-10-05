@@ -1,5 +1,8 @@
 # Mori
 
+> **Android Xiaozhi voice update:** live microphone turns now use proper `listen/start` + raw Opus audio streaming. Normal transcripts are no longer injected through the wake-word-only `detect` field. See `NO-DETECT-VOICE-FIX.md`.
+
+
 A mobile-first AI companion with a custom animated 3D avatar, four virtual worlds, an interactive home and computer, live online discovery, web and native Android voice input, and an optional live Xiaozhi connection.
 
 ## Desktop App With Built-in Chromium
