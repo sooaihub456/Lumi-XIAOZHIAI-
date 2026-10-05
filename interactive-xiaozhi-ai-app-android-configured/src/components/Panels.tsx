@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, Bookmark, Check, ChevronDown, ExternalLink, Eye, EyeOff, Heart, Leaf, LoaderCircle, Moon, PlugZap, Search, Settings2, ShieldCheck, Smile, Sparkles, Trash2, Volume2, X } from 'lucide-react';
+import { ArrowRight, Bookmark, Check, ChevronDown, ExternalLink, Eye, EyeOff, Heart, Leaf, LoaderCircle, Mic, Moon, PlugZap, Search, Settings2, ShieldCheck, Smile, Sparkles, Trash2, Volume2, X } from 'lucide-react';
 import { colors, decorColors, eyeColors, worlds } from '../data';
 import { LumiIcon, MoriMark } from './Brand';
 import { isNative } from '../lib/platform';
@@ -79,12 +79,14 @@ interface SettingsProps {
   onDisconnect: () => void;
   voiceEnabled: boolean;
   onVoiceToggle: () => void;
+  continuousListening: boolean;
+  onContinuousListeningToggle: () => void;
   reducedMotion: boolean;
   onMotionToggle: () => void;
   onReset: () => void;
 }
 
-export function SettingsPanel({ config, onConfig, status, error, onConnect, onDisconnect, voiceEnabled, onVoiceToggle, reducedMotion, onMotionToggle, onReset }: SettingsProps) {
+export function SettingsPanel({ config, onConfig, status, error, onConnect, onDisconnect, voiceEnabled, onVoiceToggle, continuousListening, onContinuousListeningToggle, reducedMotion, onMotionToggle, onReset }: SettingsProps) {
   const [showToken, setShowToken] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const locked = status === 'connecting' || status === 'connected';
@@ -107,7 +109,7 @@ export function SettingsPanel({ config, onConfig, status, error, onConnect, onDi
       {status === 'connecting' && <button type="button" className="text-button" onClick={onDisconnect}>Cancel connection</button>}
     </form>
     <details className="connection-guide"><summary>Need a little help connecting?<ChevronDown size={16} /></summary><div>{isNative ? <><p>1. Enter the Device ID, Client ID, and access token from the same paired Xiaozhi device.</p><p>2. Leave the Xiaozhi WebSocket URL at <code>wss://api.tenclass.net/xiaozhi/v1/</code> unless your device was paired to a different/self-hosted server.</p><p>3. Tap Connect to Xiaozhi. The Android app sends the required Authorization, Device-Id, Client-Id, and Protocol-Version headers natively, so no bridge or tunnel is required.</p></> : <><p>1. Copy your existing paired Device ID, Client ID, and token from your Xiaozhi setup.</p><p>2. Run the included bridge:</p><code>node --env-file=.env server/xiaozhi-bridge.mjs</code><p>3. Add your app origin to ALLOWED_ORIGINS and enter the bridge's ws:// or wss:// URL above.</p></>}<p>{isNative ? 'Voice input uses Android speech recognition. Your speech service may require internet access.' : 'Voice input uses your browser\'s speech recognition.'} Xiaozhi replies stream back as text, emotions, and Opus audio.</p><a href="https://xiaozhi.dev/en/docs/development/websocket/" target="_blank" rel="noreferrer">Xiaozhi protocol documentation<ExternalLink size={13} /></a></div></details>
-    <div className="preferences-section"><h3>The little things</h3><div className="preference-row"><Volume2 size={18} /><div><strong>Companion voice</strong><p>Let your little companion speak</p></div><button role="switch" aria-checked={voiceEnabled} aria-label="Companion voice" className={`toggle ${voiceEnabled ? 'on' : ''}`} onClick={onVoiceToggle}><span /></button></div><div className="preference-row"><Settings2 size={18} /><div><strong>Gentler motion</strong><p>Less animation, the same good company</p></div><button role="switch" aria-checked={reducedMotion} aria-label="Reduce motion" className={`toggle ${reducedMotion ? 'on' : ''}`} onClick={onMotionToggle}><span /></button></div></div>
+    <div className="preferences-section"><h3>The little things</h3><div className="preference-row"><Volume2 size={18} /><div><strong>Companion voice</strong><p>Let your little companion speak</p></div><button role="switch" aria-checked={voiceEnabled} aria-label="Companion voice" className={`toggle ${voiceEnabled ? 'on' : ''}`} onClick={onVoiceToggle}><span /></button></div><div className="preference-row"><Mic size={18} /><div><strong>Hands-free listening</strong><p>Tap the microphone once and Lumi keeps listening until you stop it. Listening pauses automatically while Lumi replies.</p></div><button role="switch" aria-checked={continuousListening} aria-label="Hands-free listening" className={`toggle ${continuousListening ? 'on' : ''}`} onClick={onContinuousListeningToggle}><span /></button></div><div className="preference-row"><Settings2 size={18} /><div><strong>Gentler motion</strong><p>Less animation, the same good company</p></div><button role="switch" aria-checked={reducedMotion} aria-label="Reduce motion" className={`toggle ${reducedMotion ? 'on' : ''}`} onClick={onMotionToggle}><span /></button></div></div>
     <div className="reset-section">{confirmReset ? <><p>Clear this browser's conversations, memories, and personalizations? This cannot be undone.</p><div><button className="text-button" onClick={() => setConfirmReset(false)}>Keep my little world</button><button className="text-button danger" onClick={() => { onReset(); setConfirmReset(false); }}>Yes, start fresh</button></div></> : <button className="text-button" onClick={() => setConfirmReset(true)}><Trash2 size={14} />Reset local data</button>}</div>
   </>;
 }

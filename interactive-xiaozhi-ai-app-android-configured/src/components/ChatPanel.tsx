@@ -11,7 +11,9 @@ interface ChatPanelProps {
   profile: Profile;
   memories: Memory[];
   busy: boolean;
+  voiceActive: boolean;
   listening: boolean;
+  continuousListening: boolean;
   interim: string;
   status: ConnectionStatus;
   mobileOpen: boolean;
@@ -25,7 +27,7 @@ interface ChatPanelProps {
   notify: (text: string) => void;
 }
 
-export default function ChatPanel({ messages, profile, memories, busy, listening, interim, status, mobileOpen, onClose, onSend, onVoice, onSave, onSpeak, onNew, onConnect, notify }: ChatPanelProps) {
+export default function ChatPanel({ messages, profile, memories, busy, voiceActive, listening, continuousListening, interim, status, mobileOpen, onClose, onSend, onVoice, onSave, onSpeak, onNew, onConnect, notify }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [menu, setMenu] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
@@ -107,10 +109,10 @@ export default function ChatPanel({ messages, profile, memories, busy, listening
       </div>
       <div className="chat-bottom">
         {messages.length < 4 && <div className="conversation-starters"><p>A LITTLE INSPIRATION</p><button disabled={busy} onClick={() => onSend("Let's take a deep breath")}><Leaf size={15} /><span>Let's take a deep breath</span><ArrowUpRight size={15} /></button><button disabled={busy} onClick={() => onSend('Tell me something good')}><Sparkles size={15} /><span>Tell me something good</span><ArrowUpRight size={15} /></button></div>}
-        {listening && <div className="listening-preview"><span className="sound-bars"><i /><i /><i /><i /></span><span>{interim || 'Listening. Take your time...'}</span><button onClick={onVoice} aria-label="Stop listening"><X size={14} /></button></div>}
+        {voiceActive && <div className="listening-preview"><span className="sound-bars"><i /><i /><i /><i /></span><span>{listening ? (interim || (continuousListening ? 'Hands-free listening is on. Speak whenever you are ready...' : 'Listening. Take your time...')) : continuousListening ? `${profile.companionName} is replying. Listening will resume automatically...` : 'Listening is paused...'}</span><button onClick={onVoice} aria-label="Stop listening"><X size={14} /></button></div>}
         <form className="message-input" onSubmit={submit}>
           <textarea ref={textarea} value={input} onChange={(event) => setInput(event.target.value)} placeholder={`Say a little something...`} aria-label={`Message ${profile.companionName}`} maxLength={2000} rows={2} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }} />
-          <div className="input-toolbar"><span>Make yourself at home.</span><button type="button" className={`input-mic ${listening ? 'active' : ''}`} aria-label={listening ? 'Stop listening' : 'Use voice input'} onClick={onVoice}><Mic size={17} /></button><button className="send-button" type="submit" disabled={!input.trim() || busy} aria-label="Send message"><ArrowUp size={18} /></button></div>
+          <div className="input-toolbar"><span>Make yourself at home.</span><button type="button" className={`input-mic ${voiceActive ? 'active' : ''}`} aria-label={voiceActive ? 'Stop listening' : 'Use voice input'} onClick={onVoice}><Mic size={17} /></button><button className="send-button" type="submit" disabled={!input.trim() || busy} aria-label="Send message"><ArrowUp size={18} /></button></div>
         </form>
         <button className={`chat-mode ${status === 'connected' ? 'connected' : ''}`} onClick={onConnect}><span className="mode-dot" />{status === 'connected' ? 'Connected to Xiaozhi AI' : status === 'connecting' ? 'Connecting to Xiaozhi...' : 'Local preview'}<span className="mode-divider" />{status === 'connected' ? 'Connection settings' : 'Connect Xiaozhi'}<ChevronDown size={11} /></button>
       </div>

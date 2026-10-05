@@ -106,6 +106,10 @@ The production frontend is verified with the provided project build. Live end-to
 
 Android live replies now use native Opus decoding and AudioTrack playback instead of WebView/WASM audio.
 
-## Android connection resilience
+## Hands-free listening
 
-The direct Android Xiaozhi client now automatically reconnects after temporary WebSocket/network/server disconnects. It uses WebSocket control pings plus bounded exponential reconnect backoff, and replays the Xiaozhi hello handshake to obtain a fresh session automatically. See `CONNECTION-RELIABILITY-FIX.md`.
+Android voice input now includes an optional **Hands-free listening** mode in Settings. Turn it on, tap the microphone once, and recognition automatically restarts after each phrase until you stop it. Recognition pauses while Lumi/Xiaozhi replies to avoid transcribing the phone speaker back into the conversation. See `HANDS-FREE-LISTENING.md`.
+
+## Async browser assistant
+
+The latest build includes non-blocking browser research, automatic handoff into the Computer interface for web-search requests, persistent microphone controls inside the Computer, compact page-reading for concise spoken answers, and safe proactive browser navigation. See `ASYNC-BROWSER-ASSISTANT.md`.

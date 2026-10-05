@@ -47,7 +47,7 @@ export async function fetchArticle(title: string, signal?: AbortSignal): Promise
 export function browserIntent(text: string, name = 'Lumi'): string | null {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const clean = text.replace(new RegExp(`^(?:hey[, ]+)?(?:${escaped}[, ]+)?(?:(?:can|could|would) you\\s+)?(?:please\\s+)?`, 'i'), '').trim();
-  const match = clean.match(/^(?:search(?:\s+(?:online|the web|the internet))?(?:\s+for)?|look\s+up|google|youtube|browse(?:\s+to)?|open|find\s+(?:information|info)\s+(?:on|about))\s+(.+)$/i);
+  const match = clean.match(/^(?:search(?:\s+(?:online|the web|the internet))?(?:\s+for)?|look\s+up|google|youtube|browse(?:\s+to)?|open|research(?:\s+(?:online|the web|the internet))?(?:\s+(?:about|on))?|check\s+(?:online|the web|the internet)(?:\s+for)?|find\s+(?:(?:information|info)\s+(?:on|about)|(?:online|on the web|on the internet)\s+for))\s+(.+)$/i);
   if (!match) return null;
   const query = match[1].trim().replace(/^(?:the\s+)?website\s+/i, '').replace(/[.!?]$/, '');
   if (/^(?:my |your |the )?(?:computer|browser|pc)$/i.test(query)) return '';

@@ -289,6 +289,10 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     return true;
   }, [status]);
 
+  // Same transport as a detected text turn, but callers may use this for
+  // hidden/background tool context without adding it to the visible user chat.
+  const sendContext = useCallback((text: string) => sendText(text), [sendText]);
+
   const interrupt = useCallback(() => {
     audio.current?.stop();
     const message = JSON.stringify({ session_id: session.current, type: 'abort', reason: 'wake_word_detected' });
@@ -313,5 +317,5 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current = null;
   }, [removeNativeListeners]);
 
-  return { status, error, audioState, connect, disconnect, sendText, interrupt, getAudio, unlockAudio, setAudioEnabled };
+  return { status, error, audioState, connect, disconnect, sendText, sendContext, interrupt, getAudio, unlockAudio, setAudioEnabled };
 }

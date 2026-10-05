@@ -41,7 +41,7 @@ The app requests internet/network access and, only when you use voice, microphon
 The preview APK is usable without a Xiaozhi account using the clearly labeled local preview. For real AI conversations on Android, **no PC bridge or Cloudflare tunnel is required**.
 
 1. Open **Settings & connection** in Mori.
-2. Leave **Xiaozhi WebSocket URL** at `wss://api.xiaozhi.me/xiaozhi/v1/` unless your paired device uses a different/self-hosted Xiaozhi server.
+2. Leave **Xiaozhi WebSocket URL** at `wss://api.tenclass.net/xiaozhi/v1/` unless your paired device uses a different/self-hosted Xiaozhi server.
 3. Enter the matching paired **Device ID**, **Client ID**, and **access token** from the same Xiaozhi device.
 4. Tap **Connect to Xiaozhi**. The native Android plugin opens the secure WebSocket itself and sends Xiaozhi's required `Authorization`, `Device-Id`, `Client-Id`, and `Protocol-Version` handshake headers.
 
@@ -74,3 +74,6 @@ Before public distribution, use a private release keystore, production signing, 
 - `scripts/build-apk.mjs`: Gradle packaging, signature verification, and artifact creation.
 - `.github/workflows/android-apk.yml`: cloud build and optional direct-download release.
 - `native/INSTALL.txt`: phone installation instructions included with the build.
+## Native voice playback
+
+Android live replies now use native Opus decoding and AudioTrack playback instead of WebView/WASM audio.

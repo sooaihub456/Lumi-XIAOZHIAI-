@@ -15,7 +15,7 @@ This build removes the bridge requirement from the Android APK.
 
 Open **Settings & connection** and enter:
 
-- Xiaozhi WebSocket URL: `wss://api.xiaozhi.me/xiaozhi/v1/` unless your paired device uses another server.
+- Xiaozhi WebSocket URL: `wss://api.tenclass.net/xiaozhi/v1/` unless your paired device uses another server.
 - Paired Device ID.
 - Paired Client ID.
 - Paired access token.
@@ -27,3 +27,7 @@ No Cloudflare tunnel, PC bridge, or `ALLOWED_ORIGINS` value is needed for the An
 Rebuild the APK after applying these files. The included GitHub Actions workflow can compile the project. The native build adds OkHttp 4.12.0 to the generated Android app.
 
 If connection fails, the native transport now reports handshake HTTP errors such as 401/403 separately from TLS/network failures. Never post the full access token in an issue or screenshot.
+
+## Native voice playback
+
+Android live replies now use native Opus decoding and AudioTrack playback instead of WebView/WASM audio.

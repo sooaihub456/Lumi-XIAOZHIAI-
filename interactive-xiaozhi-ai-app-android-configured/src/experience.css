@@ -184,10 +184,17 @@
 .browser-alert > span { flex: 1; }
 .browser-alert > button { margin-left: 4px; }
 .computer-assistant { border-top: 1px solid #e6ecdc; background: #fcfef7; padding: 8px 16px; flex-shrink: 0; }
-.computer-assistant form { display: flex; align-items: center; gap: 9px; }
+.computer-assistant form { display: flex; align-items: center; gap: 7px; }
 .computer-assistant input { flex: 1; min-width: 0; padding: 6px 0; border: 0; background: none; outline: none; color: #688451; font-size: 11px; }
 .computer-assistant input::placeholder { color: #a2b38c; }
 .computer-assistant button { display: flex; align-items: center; justify-content: center; border-radius: 7px; padding: 7px; color: #fff; background: #7d9764; }
+.computer-assistant .computer-mic { background: #edf3e6; color: #66814f; border: 1px solid #dce8d1; }
+.computer-assistant .computer-mic.active { background: #78935f; color: #fff; box-shadow: 0 0 0 3px #dfead4; }
+.computer-assistant .computer-handsfree { min-width: 30px; height: 30px; padding: 0; background: #f2f5ec; color: #8ba078; border: 1px solid #e1e8d8; font-size: 16px; line-height: 1; }
+.computer-assistant .computer-handsfree.active { background: #e1ecd5; color: #5e7b47; border-color: #cadbbd; }
+.computer-live-strip { display: flex; align-items: center; gap: 7px; margin: 7px 0 1px 34px; padding: 6px 9px; border-radius: 7px; background: #f1f6ea; color: #839a70; font-size: 9px; line-height: 1.55; }
+.computer-live-strip svg { flex-shrink: 0; }
+.computer-live-strip strong { color: #66814f; font-weight: 550; }
 .computer-assistant-reply { font-size: 11px; line-height: 1.75; color: #879e72; margin: 7px 0 2px; max-height: 86px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .browser-engine-notice { display: flex; align-items: center; gap: 10px; padding: 12px 17px; background: #f1f4e9; border-bottom: 1px solid #e2e9d7; color: #8b9c78; font-size: 10px; line-height: 1.65; flex-shrink: 0; }
@@ -277,6 +284,8 @@ html[data-platform='desktop'] .computer-window { width: min(1210px, 100%); heigh
   .browser-compatibility > svg { display: none; }
   .computer-assistant { padding: 8px 11px; }
   .computer-assistant input { font-size: 10px; }
+  .computer-assistant .computer-handsfree { min-width: 28px; height: 28px; }
+  .computer-live-strip { margin-left: 0; font-size: 8px; }
   .computer-assistant-reply { font-size: 10px; max-height: 76px; }
 }
 

@@ -1,4 +1,4 @@
-import type { BrowserDiagnostic, BrowserSnapshot } from './browser';
+import type { BrowserCommand, BrowserDiagnostic, BrowserSnapshot } from './browser';
 
 export type BrowserToolResult = {
   status: 'loaded' | 'user_action_required' | 'external_browser_required' | 'permission_required';
@@ -11,6 +11,7 @@ export interface ComputerController {
   navigate: (url: string) => Promise<BrowserToolResult>;
   readPage: () => Promise<BrowserToolResult>;
   checkWebsite: (url: string) => Promise<BrowserDiagnostic>;
+  command: (action: BrowserCommand) => Promise<{ ok: boolean; action: BrowserCommand; url: string; note: string }>;
   status: () => { mode: string; connected: boolean; url: string; assistantReadAllowed: boolean; error?: string };
 }
 
