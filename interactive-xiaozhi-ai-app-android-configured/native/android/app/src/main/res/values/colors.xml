@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#647C52</color>
+    <color name="colorPrimaryDark">#FCFCF9</color>
+    <color name="colorAccent">#8CA272</color>
+    <color name="mori_background">#F7F8F3</color>
+    <color name="ic_launcher_background">#F7F8F3</color>
+</resources>

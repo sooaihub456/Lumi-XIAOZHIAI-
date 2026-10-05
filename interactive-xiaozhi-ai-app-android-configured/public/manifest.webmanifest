@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Mori - A Little More Company",
+  "short_name": "mori",
+  "description": "Your own little world, and a companion to share it with.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fcfcf9",
+  "theme_color": "#f7f8f3",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

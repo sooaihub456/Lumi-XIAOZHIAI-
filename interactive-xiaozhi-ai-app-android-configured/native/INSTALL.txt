@@ -1,0 +1,34 @@
+MORI ANDROID PREVIEW
+
+1. Download mori-preview.apk to your Android phone.
+2. If you downloaded the Actions artifact ZIP, extract it first.
+3. Tap mori-preview.apk. If Android asks, allow your browser or Files app to
+   install unknown apps, then confirm Install. You can turn that permission
+   off again immediately afterward. Keep Play Protect enabled.
+4. Open Mori. The companion, worlds, gestures, and local-preview chat work
+   without a Xiaozhi account. Allow microphone permission only if you want
+   to use voice input.
+
+REQUIREMENTS
+Android 7.0 or newer, with Android System WebView or Chrome 120 or newer.
+Use a recent device for the best 3D performance.
+Voice recognition needs an installed Android speech service and may need
+internet. Demo speech needs an installed English text-to-speech voice.
+
+LIVE XIAOZHI
+The APK does not include an AI server or private credentials. Run the Mori
+bridge on a server with HTTPS/WSS, include https://localhost in its
+ALLOWED_ORIGINS, then enter its wss:// address and your paired credentials
+in Settings & connection. localhost on your phone is the phone itself,
+not your computer. Do not disable TLS checks to connect.
+
+TEST BUILD
+This APK is debug-signed for personal testing. Do not submit it to the
+Play Store or use it as a production distribution. No credentials are
+bundled. The SHA-256 checksum is included alongside the APK.
+
+UPDATING
+GitHub Actions caches its test signing key. If the key changes (for example,
+after cache eviction), Android may refuse to update an older installation.
+Export your conversations first; uninstalling Mori removes local app data.
+Then uninstall the old test app and install the new APK.

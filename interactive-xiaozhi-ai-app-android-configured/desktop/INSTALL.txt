@@ -1,0 +1,52 @@
+MORI DESKTOP PREVIEW
+
+This package is a desktop application with its own local Chromium browser.
+It is not an Android APK. The web preview cannot run the embedded desktop engine.
+
+WINDOWS
+Use the .exe installer, or extract the .zip and run Mori.exe from the complete
+extracted folder. Do not copy just the executable out of that folder.
+
+macOS
+Open the .dmg and drag Mori to Applications, or extract the .zip. Preview builds
+are unsigned and not notarized. macOS may block them. For wider distribution,
+the app owner must sign and notarize the app. Do not disable system protections.
+
+LINUX
+Use the .AppImage (mark it executable) or extract the .tar.gz and run mori.
+Run as a normal user, never root. A desktop display and Chromium sandbox support
+are required. Do not add --no-sandbox as a workaround.
+
+BROWSING
+Open His computer in Mori and choose Google or YouTube, or enter an HTTP/HTTPS URL.
+Pages run locally, not in frames or as streamed screenshots. Use + for new tabs.
+Ctrl/Cmd+L focuses the address bar; Ctrl/Cmd+T opens a tab; Ctrl/Cmd+W closes one.
+Zoom, mute, and downloads are available in the computer interface.
+HTTP pages show Not secure. Prefer HTTPS for any private information.
+If a site fails, open computer Settings > Check live website for the actual
+engine response, then save the diagnostic report.
+
+XIAOZHI
+Browsing does not need a server. Live Xiaozhi AI still needs your paired device
+credentials and Xiaozhi bridge. Add mori://app to the bridge's ALLOWED_ORIGINS.
+Turn on the page-sharing button in the browser toolbar if you want Xiaozhi to
+read the current public page. Password fields and known account/payment pages
+are not shared. Separate browser tabs outside Mori cannot be read.
+
+LIMITS
+Some account providers, CAPTCHAs, protected video, and DRM require your default
+browser. The app does not bypass website restrictions or spoof Google sign-in.
+Desktop voice transcription is not configured; use typed chat with Xiaozhi.
+The Android app keeps its existing native voice input.
+
+PRIVACY
+Browser pages have no Node.js, filesystem, or Mori preload access. Standard
+profiles remember website cookies separately from companion settings. Choose
+Private session to discard website data when the app exits. Downloads always
+ask for a destination and are never opened automatically. Keep page sharing off
+on any page whose visible text you do not want sent to your Xiaozhi service.
+
+SECURITY UPDATES
+This preview has no automatic updater. Use updated builds containing current
+Electron and Chromium versions. SHA256SUMS.txt and build-info.json accompany
+the download. Check DESKTOP.md in the source for building, tests, and signing.
