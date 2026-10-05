@@ -1,8 +1,13 @@
 Android source configuration: COMPLETE
-Java source syntax parse check: PASSED (Android/Capacitor SDK classes unavailable locally, so full javac type resolution was not possible)
+Direct native Xiaozhi WebSocket transport: IMPLEMENTED
+Bridge/tunnel requirement for Android APK: REMOVED
+Browser/web Xiaozhi bridge path: PRESERVED
+Java native transport syntax/stub compile check: PASSED
+TypeScript/TSX transpile syntax checks: PASSED
 Android XML parse check: PASSED
 Node build-script syntax checks: PASSED
+Duplicate launcher resource build fix: INCLUDED
 Local APK compile: NOT RUN
-Reason: this execution environment has Node 22 and JDK 21 but no Android SDK, and shell network access cannot fetch npm/Gradle/Android SDK dependencies.
+Reason: this execution environment does not provide a complete Android SDK/dependency cache for an offline Gradle build.
 
-The repository already includes a GitHub Actions workflow that installs Node 22, JDK 21, Android SDK 36 / build-tools 36.0.0, compiles the web app, packages the Capacitor Android project, verifies the APK signature, and uploads `mori-preview.apk`.
+Use the included GitHub Actions Android APK workflow to compile the modified project. The build script adds the native OkHttp dependency, prepares Capacitor Android, builds the debug APK, verifies its signature, and outputs artifacts/mori-preview.apk.

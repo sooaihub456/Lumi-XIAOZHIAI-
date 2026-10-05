@@ -19,33 +19,21 @@ export async function prepareAndroid() {
   if (!existsSync(capacitor)) throw new Error('Install the project dependencies first.');
 
   // Generate from the installed official template, including its matching Gradle wrapper.
-  if (!existsSync(resolve(root, 'android/app/build.gradle'))) {
-    run(process.execPath, [capacitor, 'add', 'android']);
-  }
-  
-  // Capacitor creates its own launcher background resource.
-  // Mori also defines ic_launcher_background in colors.xml.
-  // Remove Capacitor's duplicate before applying Mori's native resources.
-  await rm(
-    resolve(
-      root,
-      'android/app/src/main/res/values/ic_launcher_background.xml'
-    ),
-    { force: true }
-  );
-  
-  await cp(
-    resolve(root, 'native/android'),
-    resolve(root, 'android'),
-    { recursive: true }
-  );
+  if (!existsSync(resolve(root, 'android/app/build.gradle'))) run(process.execPath, [capacitor, 'add', 'android']);
+  // Capacitor's template also defines ic_launcher_background. Mori defines it in colors.xml, so remove the duplicate before merging native resources.
+  await rm(resolve(root, 'android/app/src/main/res/values/ic_launcher_background.xml'), { force: true });
+  await cp(resolve(root, 'native/android'), resolve(root, 'android'), { recursive: true });
   const gradlePath = resolve(root, 'android/app/build.gradle');
   const buildNumber = Number(process.env.MORI_VERSION_CODE || process.env.GITHUB_RUN_NUMBER || '1');
   if (!Number.isInteger(buildNumber) || buildNumber < 1 || buildNumber > 2100000000) throw new Error('MORI_VERSION_CODE must be a positive Android version code.');
   const gradle = await readFile(gradlePath, 'utf8');
-  const updated = gradle
+  let updated = gradle
     .replace(/versionCode\s+(?:=\s*)?\d+/, `versionCode ${buildNumber}`)
-    .replace(/versionName\s+(?:=\s*)?["'][^"']+["']/, `versionName "0.5.${buildNumber}-preview"`);
+    .replace(/versionName\s+(?:=\s*)?["'][^"']+["']/, `versionName "0.6.${buildNumber}-preview"`);
+  // Native Android connects directly to Xiaozhi with authenticated WebSocket headers.
+  if (!updated.includes('com.squareup.okhttp3:okhttp')) {
+    updated = updated.replace(/dependencies\s*\{/, `dependencies {\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"`);
+  }
   await writeFile(gradlePath, updated);
   run(process.execPath, [capacitor, 'sync', 'android']);
 

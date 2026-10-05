@@ -38,14 +38,14 @@ The app requests internet/network access and, only when you use voice, microphon
 
 ## Live Xiaozhi on a Phone
 
-The preview APK is usable without a Xiaozhi account, using the clearly labeled, rule-based local preview. For real AI conversations:
+The preview APK is usable without a Xiaozhi account using the clearly labeled local preview. For real AI conversations on Android, **no PC bridge or Cloudflare tunnel is required**.
 
-1. Deploy the included `server/xiaozhi-bridge.mjs` on a server, using your paired Xiaozhi setup.
-2. Put the bridge behind TLS and use a reachable **wss://** URL. Mori's Xiaozhi connection rejects insecure `ws://` endpoints on Android, even though its separate web browser can open public HTTP pages.
-3. Include **https://localhost** in the bridge's `ALLOWED_ORIGINS`. This is the packaged app's WebView origin, not the bridge's network address.
-4. In Mori, open **Connect AI**, enter the bridge URL and matching paired Device ID, Client ID, and token, and connect.
+1. Open **Settings & connection** in Mori.
+2. Leave **Xiaozhi WebSocket URL** at `wss://api.xiaozhi.me/xiaozhi/v1/` unless your paired device uses a different/self-hosted Xiaozhi server.
+3. Enter the matching paired **Device ID**, **Client ID**, and **access token** from the same Xiaozhi device.
+4. Tap **Connect to Xiaozhi**. The native Android plugin opens the secure WebSocket itself and sends Xiaozhi's required `Authorization`, `Device-Id`, `Client-Id`, and `Protocol-Version` handshake headers.
 
-`localhost` on your phone means your phone, not your computer. The APK does not include or run the Node bridge. Device provisioning and pairing remain in your Xiaozhi installation. See `README.md` for the protocol and server details.
+The access token is kept in memory for the current app session and is not written to local storage by Mori. The web/browser build still uses `server/xiaozhi-bridge.mjs`, because browser WebSocket APIs cannot set those handshake headers. Pairing/provisioning remains in your Xiaozhi installation.
 
 ## Build on Your Computer
 
@@ -64,12 +64,12 @@ To work in Android Studio instead, run `node scripts/prepare-android.mjs` after 
 
 These are **debug-signed test builds**, not production releases. GitHub Actions caches the generated debug keystore to allow updates during testing. Cache eviction, a different repository, or a different local build machine can change the signing key. If Android refuses to update, export your conversations before uninstalling the old build; uninstalling removes local app data. Then install the new APK.
 
-Before public distribution, use a private release keystore, production signing, an appropriate privacy policy, and physical-device tests. Protect any shared Xiaozhi bridge with your own user authentication and rate limiting.
+Before public distribution, use a private release keystore, production signing, an appropriate privacy policy, and physical-device tests. If you deploy the optional browser bridge, protect it with your own user authentication and rate limiting.
 
 ## Build Files
 
 - `capacitor.config.ts`: app identity, bundled asset directory, secure WebView, and system bars.
-- `native/android/`: Android manifest, permissions, launcher icons, splash theme, and scoped file-sharing paths.
+- `native/android/`: Android manifest, permissions, launcher icons, splash theme, scoped file-sharing paths, native browser, and direct Xiaozhi WebSocket plugin.
 - `scripts/prepare-android.mjs`: official native project generation and plugin synchronization.
 - `scripts/build-apk.mjs`: Gradle packaging, signature verification, and artifact creation.
 - `.github/workflows/android-apk.yml`: cloud build and optional direct-download release.

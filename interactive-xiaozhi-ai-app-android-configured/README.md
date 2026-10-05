@@ -49,33 +49,37 @@ The app works immediately in **Local preview**. Preview replies are deliberately
 
 ## Connect Xiaozhi
 
-Xiaozhi requires `Authorization`, `Device-Id`, `Client-Id`, and `Protocol-Version` HTTP headers when opening a WebSocket. Browser WebSockets cannot attach these headers, so the project includes `server/xiaozhi-bridge.mjs`.
+Xiaozhi requires `Authorization`, `Device-Id`, `Client-Id`, and `Protocol-Version` headers when the WebSocket opens.
 
-1. Use an existing paired Xiaozhi device and obtain its matching Device ID, Client ID, and access token. Pairing/provisioning is managed by your Xiaozhi installation and is not implemented in Mori.
-2. Copy `.env.example` to `.env`. Set `XIAOZHI_WS_URL` to your Xiaozhi endpoint and `ALLOWED_ORIGINS` to your frontend's exact origin. The default origins cover a local Vite app on port 5173.
-3. Either put the paired credentials in the bridge's environment variables or enter them in Mori. Server-side credentials take precedence. The destination URL is only configured on the server.
-4. Start the bridge using Node 20.6 or newer: `node --env-file=.env server/xiaozhi-bridge.mjs`.
-5. Open **Settings & connection** in Mori. Enter `ws://localhost:8787` for local development, or your deployed bridge's `wss://` address. Enter the matching device credentials and choose **Connect to Xiaozhi**.
+### Android APK
 
-The app only shows **Connected** after receiving a valid Xiaozhi `hello` acknowledgement. Connection errors and handshake timeouts are shown in Settings. Disconnecting restores local preview. New conversations reconnect a live session.
+Android now connects **directly** to Xiaozhi through the native `MoriXiaozhi` plugin. No Node bridge, Cloudflare tunnel, or `ALLOWED_ORIGINS` configuration is needed on the phone.
 
-### Deployment
+1. Use an existing paired Xiaozhi device and obtain its matching Device ID, Client ID, and access token.
+2. In **Settings & connection**, leave the server URL at `wss://api.xiaozhi.me/xiaozhi/v1/` unless the device was paired to another/self-hosted server.
+3. Enter the matching credentials and choose **Connect to Xiaozhi**.
 
-Deploy the Vite frontend and the Node bridge separately. The included Vite build does not start a backend server. Serve production WebSockets through TLS with a reverse proxy and set `ALLOWED_ORIGINS` explicitly. Do not expose a server-owned Xiaozhi token to untrusted users; protect a shared deployment with your own application authentication and rate limiting. Keep `.env` out of version control.
+The native layer uses an authenticated secure WebSocket, sends the protocol `hello`, forwards JSON/MCP messages, and streams returned Opus audio frames back to the UI. The access token is session-only in the frontend and is not saved to local storage.
 
-The bridge is an origin-allowlisted, fixed-destination proxy with bounded payloads, handshake timeouts, and heartbeat cleanup. Its `/health` endpoint exposes service health, never credentials.
+### Web/browser build
 
-### Supported Protocol
+Browser WebSocket APIs cannot attach Xiaozhi's required handshake headers, so the web build still uses `server/xiaozhi-bridge.mjs`. Copy `.env.example` to `.env`, configure the upstream URL/origins/credentials, start the bridge with `node --env-file=.env server/xiaozhi-bridge.mjs`, and connect the web UI to that bridge.
 
-- Xiaozhi WebSocket protocol v1 with raw Opus frames.
-- Client `hello`, `listen` with `state: "detect"` and text, and `abort`.
-- Server `hello`, `stt`, `llm` emotion updates, `tts` start/sentence/stop, alerts, and custom gestures.
+The app only shows **Connected** after receiving a valid Xiaozhi `hello` acknowledgement. Connection errors and handshake timeouts are shown in Settings. Disconnecting restores local preview.
+
+### Browser bridge deployment
+
+Deploy the Vite frontend and Node bridge separately when using the web build. Serve production WebSockets through TLS and set `ALLOWED_ORIGINS` explicitly. Do not expose a server-owned Xiaozhi token to untrusted users; protect a shared bridge with your own application authentication and rate limiting. The bridge `/health` endpoint exposes service health, never credentials.
+
+## Supported Protocol
+
+- Xiaozhi WebSocket protocol v1 with raw Opus reply frames.
+- Client `hello`, `listen` with `state: "detect"` and text, `abort`, and MCP replies.
+- Server `hello`, `stt`, `llm` emotion updates, `tts` start/sentence/stop, alerts, custom gestures, and MCP requests.
 - Mono Opus reply decoding through `opus-decoder` with scheduled Web Audio playback.
-- Optional custom gesture messages: `{"type":"custom","payload":{"gesture":"wave","emotion":"happy"}}`. Supported gestures are `idle`, `wave`, `hug`, `dance`, and `breathe`.
+- Optional custom gesture messages such as `{"type":"custom","payload":{"gesture":"wave","emotion":"happy"}}`. Supported gestures are `idle`, `wave`, `hug`, `dance`, and `breathe`.
 
-Voice input uses the browser's Speech Recognition API on the web and the native Android recognizer in the APK, then sends the transcript as a Xiaozhi text detection message. It is not raw microphone-to-Opus streaming. A typed fallback and permission errors are provided. Recognition may use the browser or device vendor's online service. In local preview, replies use browser speech synthesis or native Android text-to-speech. In live mode, replies use Xiaozhi's Opus audio. Audio requires a user interaction.
-
-Configure live AI personality and voice in Xiaozhi; the personality selector in Mori controls only the local preview. Browser and world MCP tools are supported. OTA pairing and device firmware management remain outside this app's scope.
+Voice input uses the browser Speech Recognition API on the web and the native Android recognizer in the APK, then sends the transcript as a Xiaozhi text detection message. It is not raw microphone-to-Opus streaming. In local preview, replies use browser speech synthesis or native Android text-to-speech. In live mode, replies use Xiaozhi Opus audio. Configure live AI personality and voice in Xiaozhi; the Mori personality selector controls only local preview.
 
 Protocol reference: https://xiaozhi.dev/en/docs/development/websocket/
 
@@ -91,9 +95,10 @@ Protocol reference: https://xiaozhi.dev/en/docs/development/websocket/
 - `src/lib/speech.ts`: native and browser text-to-speech.
 - `src/lib/files.ts`: native sharing, file export, and clipboard.
 - `src/lib/audio.ts`: ordered Opus decoding and playback.
-- `server/xiaozhi-bridge.mjs`: authenticated Xiaozhi WebSocket bridge.
+- `native/android/app/src/main/java/app/mori/companion/MoriXiaozhiPlugin.java`: native authenticated Xiaozhi WebSocket transport for Android.
+- `server/xiaozhi-bridge.mjs`: authenticated Xiaozhi WebSocket bridge for the web/browser build.
 - `public/images/`: generated virtual-world artwork.
 
 ## Verification
 
-The production frontend is verified with the provided project build. Live end-to-end Xiaozhi authentication, upstream responses, and microphone behavior require a paired device, a running bridge, and browser permissions; no live account credentials are bundled.
+The production frontend is verified with the provided project build. Live end-to-end Xiaozhi authentication and upstream responses require a paired device and network access. Android connects natively; the web build requires the optional bridge. No live account credentials are bundled.

@@ -50,6 +50,7 @@ export interface World {
 
 export interface ConnectionConfig {
   bridgeUrl: string;
+  xiaozhiUrl: string;
   deviceId: string;
   clientId: string;
   token: string;

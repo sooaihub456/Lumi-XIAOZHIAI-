@@ -18,6 +18,7 @@ import { computerController } from './lib/browserAssistant';
 import { desktopBridge } from './lib/desktop';
 import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
+import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
 import type { Activity, ConnectionConfig, Emotion, Gesture, Memory, Message, Panel, Profile, WorldId, XiaozhiEvent } from './types';
 
 const panelTitles = {
@@ -46,7 +47,7 @@ export default function App() {
   const [computer, setComputer] = useState<BrowserRequest | null>(null);
   const computerRef = useRef(computer);
   computerRef.current = computer;
-  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '' }));
+  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '' }));
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = gentleMotion || !!prefersReducedMotion;
   const world = worlds.find((item) => item.id === worldId) ?? worlds[0];
@@ -247,10 +248,11 @@ export default function App() {
       localStorage.setItem('mori-voice', JSON.stringify(voiceEnabled));
       localStorage.setItem('mori-motion', JSON.stringify(gentleMotion));
       localStorage.setItem('mori-bridge-url', JSON.stringify(config.bridgeUrl));
+      localStorage.setItem('mori-xiaozhi-url', JSON.stringify(config.xiaozhiUrl));
       localStorage.setItem('mori-device-id', JSON.stringify(config.deviceId));
       localStorage.setItem('mori-client-id', JSON.stringify(config.clientId));
     } catch { /* Private browsing may not allow persistent storage. */ }
-  }, [profile, messages, memories, worldId, voiceEnabled, gentleMotion, config.bridgeUrl, config.deviceId, config.clientId]);
+  }, [profile, messages, memories, worldId, voiceEnabled, gentleMotion, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId]);
 
   useEffect(() => {
     xiaozhi.getAudio().setEnabled(voiceEnabled);
@@ -448,7 +450,7 @@ export default function App() {
     closeComputer();
     setVoiceEnabled(true);
     setGentleMotion(false);
-    setConfig({ bridgeUrl: '', deviceId: '02:00:00:00:00:01', clientId: uid(), token: '' });
+    setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '' });
     playGesture('idle', 'happy');
     notify('A fresh start for your little world.');
   }

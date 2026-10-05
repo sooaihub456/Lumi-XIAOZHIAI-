@@ -33,7 +33,7 @@ async function buildApk() {
   await copyFile(builtApk, apk);
   const checksum = createHash('sha256').update(await readFile(apk)).digest('hex');
   await writeFile(resolve(artifacts, 'mori-preview.apk.sha256'), `${checksum}  mori-preview.apk\n`);
-  await writeFile(resolve(artifacts, 'build-info.json'), `${JSON.stringify({ app: 'Mori', package: 'app.mori.companion', variant: 'debug', minAndroid: '7.0', minWebView: 120, commit: process.env.GITHUB_SHA || 'local', builtAt: new Date().toISOString(), sha256: checksum }, null, 2)}\n`);
+  await writeFile(resolve(artifacts, 'build-info.json'), `${JSON.stringify({ app: 'Mori', package: 'app.mori.companion', variant: 'debug', minAndroid: '7.0', minWebView: 100, commit: process.env.GITHUB_SHA || 'local', builtAt: new Date().toISOString(), sha256: checksum }, null, 2)}\n`);
   await copyFile(resolve(root, 'native/INSTALL.txt'), resolve(artifacts, 'INSTALL.txt'));
   console.log(`\nInstallable test APK: ${apk}\nSHA-256: ${checksum}\nThis is a debug-signed preview, not a Play Store release.`);
 }
