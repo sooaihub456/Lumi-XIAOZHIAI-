@@ -23,23 +23,45 @@ export async function prepareAndroid() {
   // Capacitor's template also defines ic_launcher_background. Mori defines it in colors.xml, so remove the duplicate before merging native resources.
   await rm(resolve(root, 'android/app/src/main/res/values/ic_launcher_background.xml'), { force: true });
   await cp(resolve(root, 'native/android'), resolve(root, 'android'), { recursive: true });
+
+  // Let Capacitor finish generating/synchronizing the Android project first.
+  // Capacitor 8 may refresh app/build.gradle during sync, so native Maven
+  // dependencies must be injected AFTER this step or they can disappear from
+  // the Java compile classpath.
+  run(process.execPath, [capacitor, 'sync', 'android']);
+
   const gradlePath = resolve(root, 'android/app/build.gradle');
   const buildNumber = Number(process.env.MORI_VERSION_CODE || process.env.GITHUB_RUN_NUMBER || '1');
   if (!Number.isInteger(buildNumber) || buildNumber < 1 || buildNumber > 2100000000) throw new Error('MORI_VERSION_CODE must be a positive Android version code.');
+
   const gradle = await readFile(gradlePath, 'utf8');
   let updated = gradle
     .replace(/versionCode\s+(?:=\s*)?\d+/, `versionCode ${buildNumber}`)
     .replace(/versionName\s+(?:=\s*)?["'][^"']+["']/, `versionName "0.8.${buildNumber}-preview"`);
-  // Native Android connects directly to Xiaozhi with authenticated WebSocket headers.
+
+  // Native Android connects directly to Xiaozhi and decodes its raw Opus
+  // packets. Keep these dependencies on the final app compile classpath.
   const nativeDependencies = [
     ['com.squareup.okhttp3:okhttp', 'implementation "com.squareup.okhttp3:okhttp:4.12.0"'],
     ['io.github.jaredmdobson:concentus', 'implementation "io.github.jaredmdobson:concentus:1.0.1"'],
   ];
   for (const [marker, declaration] of nativeDependencies) {
-    if (!updated.includes(marker)) updated = updated.replace(/dependencies\s*\{/, `dependencies {\n    ${declaration}`);
+    if (!updated.includes(marker)) {
+      const next = updated.replace(/dependencies\s*\{/, `dependencies {\n    ${declaration}`);
+      if (next === updated) throw new Error(`Could not add Android dependency ${marker}: dependencies block was not found.`);
+      updated = next;
+    }
   }
+
   await writeFile(gradlePath, updated);
-  run(process.execPath, [capacitor, 'sync', 'android']);
+
+  // Fail early with a clear message instead of reaching javac with a missing
+  // org.concentus.OpusDecoder class.
+  const verifiedGradle = await readFile(gradlePath, 'utf8');
+  for (const [marker] of nativeDependencies) {
+    if (!verifiedGradle.includes(marker)) throw new Error(`Android dependency was not preserved: ${marker}`);
+  }
+  console.log('Android native dependencies ready: OkHttp + Concentus Opus decoder.');
 
   const licenses = resolve(root, 'android/app/src/main/assets/licenses');
   await mkdir(licenses, { recursive: true });
