@@ -39,11 +39,11 @@ export async function prepareAndroid() {
     .replace(/versionCode\s+(?:=\s*)?\d+/, `versionCode ${buildNumber}`)
     .replace(/versionName\s+(?:=\s*)?["'][^"']+["']/, `versionName "0.8.${buildNumber}-preview"`);
 
-  // Native Android connects directly to Xiaozhi and decodes its raw Opus
-  // packets. Keep these dependencies on the final app compile classpath.
+  // Native Android connects directly to Xiaozhi over OkHttp. Voice playback
+  // uses Android's built-in MediaCodec Opus decoder, so no third-party Opus
+  // library is required on the Gradle compile classpath.
   const nativeDependencies = [
     ['com.squareup.okhttp3:okhttp', 'implementation "com.squareup.okhttp3:okhttp:4.12.0"'],
-    ['io.github.jaredmdobson:concentus', 'implementation "io.github.jaredmdobson:concentus:1.0.1"'],
   ];
   for (const [marker, declaration] of nativeDependencies) {
     if (!updated.includes(marker)) {
@@ -55,13 +55,12 @@ export async function prepareAndroid() {
 
   await writeFile(gradlePath, updated);
 
-  // Fail early with a clear message instead of reaching javac with a missing
-  // org.concentus.OpusDecoder class.
+  // Verify the native networking dependency is preserved in the generated app.
   const verifiedGradle = await readFile(gradlePath, 'utf8');
   for (const [marker] of nativeDependencies) {
     if (!verifiedGradle.includes(marker)) throw new Error(`Android dependency was not preserved: ${marker}`);
   }
-  console.log('Android native dependencies ready: OkHttp + Concentus Opus decoder.');
+  console.log('Android native dependencies ready: OkHttp. Opus playback uses Android MediaCodec.');
 
   const licenses = resolve(root, 'android/app/src/main/assets/licenses');
   await mkdir(licenses, { recursive: true });
