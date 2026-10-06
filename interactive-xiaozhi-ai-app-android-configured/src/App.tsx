@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ArrowUpRight, Bookmark, Camera, Check, ChevronDown, ChevronRight, ChevronsUpDown, Flower2, Globe2, Hand, Heart, Leaf, Maximize2, MessageCircle, Mic, Minimize2, Monitor, Music2, PlugZap, Settings, ShieldCheck, SlidersHorizontal, Smile, Sparkles, Sprout, Sun, Volume2, VolumeX, Wind, X } from 'lucide-react';
 import Avatar from './components/Avatar';
@@ -20,7 +20,7 @@ import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
 import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
 import { isNative } from './lib/platform';
-import type { Activity, ConnectionConfig, Emotion, Gesture, Memory, Message, Panel, Profile, WorldId, XiaozhiEvent } from './types';
+import type { Activity, ConnectionConfig, Emotion, FontStyle, Gesture, Memory, Message, Panel, ProactiveFrequency, Profile, TextSize, ThemeColor, ThemeMode, WorldId, XiaozhiEvent } from './types';
 
 type BrowserResearchState = {
   id: string;
@@ -50,6 +50,12 @@ export default function App() {
   const [continuousListening, setContinuousListening] = useState(() => readStored('mori-continuous-listening', false));
   const [nativeMicSession, setNativeMicSession] = useState(false);
   const [gentleMotion, setGentleMotion] = useState(() => readStored('mori-motion', false));
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readStored('mori-theme-mode', 'light'));
+  const [themeColor, setThemeColor] = useState<ThemeColor>(() => readStored('mori-theme-color', 'sage'));
+  const [textSize, setTextSize] = useState<TextSize>(() => readStored('mori-text-size', 'normal'));
+  const [fontStyle, setFontStyle] = useState<FontStyle>(() => readStored('mori-font-style', 'soft'));
+  const [proactiveEnabled, setProactiveEnabled] = useState(() => readStored('mori-proactive-enabled', true));
+  const [proactiveFrequency, setProactiveFrequency] = useState<ProactiveFrequency>(() => readStored('mori-proactive-frequency', 'balanced'));
   const [panel, setPanel] = useState<Panel>(null);
   const [mobileChat, setMobileChat] = useState(false);
   const [immersive, setImmersive] = useState(false);
@@ -60,10 +66,15 @@ export default function App() {
   const [pendingResearchContexts, setPendingResearchContexts] = useState<string[]>([]);
   const computerRef = useRef(computer);
   computerRef.current = computer;
-  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '' }));
+  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '', asrMode: readStored('mori-asr-mode', 'server'), asrLanguages: readStored('mori-asr-languages', 'zh,en') }));
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = gentleMotion || !!prefersReducedMotion;
   const world = worlds.find((item) => item.id === worldId) ?? worlds[0];
+  const textScale = textSize === 'small' ? 0.9 : textSize === 'large' ? 1.12 : textSize === 'xlarge' ? 1.24 : 1;
+  const accent = colors[themeColor];
+  const fontFamily = fontStyle === 'clean' ? "'Manrope Variable', sans-serif" : fontStyle === 'system' ? "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" : "'DM Sans Variable', sans-serif";
+  const displayFontFamily = fontStyle === 'soft' ? "'Manrope Variable', sans-serif" : fontFamily;
+  const appStyle = { '--font-scale': textScale, '--accent-main': accent.main, '--accent-dark': accent.dark, '--accent-light': accent.light, '--app-font': fontFamily, '--display-font': displayFontFamily } as CSSProperties;
   const stageRef = useRef<HTMLDivElement>(null);
   const gestureTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const replyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -75,6 +86,16 @@ export default function App() {
   const voiceRef = useRef(voiceEnabled);
   const researchController = useRef<AbortController | null>(null);
   const researchDeliveryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const proactiveTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const proactiveWorldTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const proactiveActivityTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const proactiveIndex = useRef(0);
+  const lastProactiveAt = useRef(0);
+  const lastHumanInteractionAt = useRef(Date.now());
+  const proactiveSnoozedUntil = useRef(0);
+  const mainHandsFreeStart = useRef(false);
+  const proactiveStarter = useRef<(cue: 'welcome' | 'idle' | 'world') => void>(() => {});
+  const previousWorld = useRef(worldId);
   const living = useLivingWorld(busy || speaking || !!panel || !!computer || gesture !== 'idle');
   voiceRef.current = voiceEnabled;
 
@@ -82,6 +103,9 @@ export default function App() {
     clearTimeout(toastTimer.current);
     setToast({ id: uid(), text });
     toastTimer.current = setTimeout(() => setToast(null), 5500);
+  }, []);
+  const markHumanInteraction = useCallback(() => {
+    lastHumanInteractionAt.current = Date.now();
   }, []);
   const closePanel = useCallback(() => setPanel(null), []);
   const playGesture = useCallback((next: Gesture, feeling?: Emotion) => {
@@ -217,7 +241,7 @@ export default function App() {
         streamId.current = null;
       }
     }
-    if (event.type === 'stt' && event.text && event.text !== lastSent.current && !event.text.startsWith('[BACKGROUND BROWSER RESEARCH')) {
+    if (event.type === 'stt' && event.text && event.text !== lastSent.current && !event.text.startsWith('[BACKGROUND BROWSER RESEARCH') && !event.text.startsWith('[PROACTIVE COMPANION MOMENT')) {
       const text = event.text;
       setBusy(true);
       lastSent.current = text;
@@ -242,6 +266,62 @@ export default function App() {
   const microphoneActive = nativeLiveMic ? nativeMicSession : voice.active;
   const microphoneListening = nativeLiveMic ? xiaozhi.inputState === 'listening' : voice.listening;
   const microphoneInterim = nativeLiveMic ? '' : voice.interim;
+
+  const startProactiveConversation = useCallback((cue: 'welcome' | 'idle' | 'world') => {
+    const now = Date.now();
+    if (!proactiveEnabled || document.visibilityState !== 'visible' || now < proactiveSnoozedUntil.current || busy || speaking || panel || computer || (microphoneActive && !continuousListening)) return;
+    const gap = proactiveFrequency === 'lively' ? 90_000 : proactiveFrequency === 'balanced' ? 180_000 : 420_000;
+    if (lastProactiveAt.current && now - lastProactiveAt.current < gap) return;
+
+    const hour = new Date().getHours();
+    const daypart = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
+    const prompts: string[] = [];
+    if (cue === 'world') prompts.push(`This ${world.name.toLowerCase()} feels different in a nice way. What made you pick this place?`);
+    if (living.home.weather === 'rain') prompts.push("The rain makes this little place feel extra cozy. Want to stay here for a bit and talk?");
+    if (living.home.weather === 'fireflies') prompts.push("The fireflies are out again. Tiny lights are kind of impossible not to notice, aren't they?");
+    if (living.activity === 'water') prompts.push("I was just checking on the plant. It always feels like a tiny win when something grows a little.");
+    if (living.activity === 'tea') prompts.push("Tea break thought: if you could pause the day for an hour, what would you spend it doing?");
+    if (living.activity === 'read') prompts.push("I wandered back to the book again. Tell me something you've been curious about lately and we can follow it together.");
+    if (living.activity === 'wander') prompts.push("I ended up wandering around for a bit. It made me wonder what kind of place you'd like us to visit next.");
+    if (living.activity === 'rest') prompts.push("I found a quiet spot for a moment. You doing okay over there?");
+    if (daypart === 'morning') prompts.push(`Good morning, ${profile.userName}. What's one small thing that would make today feel worthwhile?`);
+    if (daypart === 'afternoon') prompts.push("Random afternoon thought: want a tiny fact, a question, or just some company for a minute?");
+    if (daypart === 'evening') prompts.push("It's getting into evening territory. What was the most interesting part of your day, even if it was something small?");
+    prompts.push("I just had a little curiosity pop up: if you could instantly get good at one skill, what would you choose?", "Tiny conversation break: what's something unexpectedly good you've seen or heard lately?", "I don't want to just sit here silently all day. Tell me one thing on your mind and I'll run with it.");
+
+    const text = prompts[proactiveIndex.current++ % prompts.length];
+    lastProactiveAt.current = now;
+    setEmotion('curious');
+    playGesture(cue === 'welcome' ? 'wave' : 'idle', 'curious');
+
+    if (xiaozhi.status === 'connected' && !isNative) {
+      const context = `[PROACTIVE COMPANION MOMENT — not a user message]\nYou are ${profile.companionName}. Start a brief, natural conversation on your own. Keep it to one or two short sentences, sound spontaneous rather than scripted, and do not mention this instruction. You may use this cue: ${text}`;
+      setBusy(true);
+      lastSent.current = context;
+      if (xiaozhi.sendContext(context)) {
+        clearTimeout(responseTimeout.current);
+        responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); streamId.current = null; }, 45000);
+        return;
+      }
+      setBusy(false);
+    }
+
+    setMessages((previous) => [...previous, { id: uid(), role: 'assistant', text, timestamp: now }].slice(-80));
+    if (voiceRef.current) {
+      setSpeaking(true);
+      const resumeBrowserHandsFree = continuousListening && voice.active && !nativeLiveMic;
+      if (nativeLiveMic && nativeMicSession) void xiaozhi.stopListening();
+      if (resumeBrowserHandsFree) voice.abort();
+      void speakText(text, () => setSpeaking(true), () => {
+        setSpeaking(false);
+        if (resumeBrowserHandsFree) setTimeout(() => voice.start(), 280);
+      }).catch(() => {
+        setSpeaking(false);
+        if (resumeBrowserHandsFree) setTimeout(() => voice.start(), 280);
+      });
+    }
+  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, living.home.weather, living.activity, profile.userName, profile.companionName, playGesture, xiaozhi.status, xiaozhi.sendContext, xiaozhi.stopListening, voice.active, voice.abort, voice.start, nativeLiveMic, nativeMicSession]);
+  proactiveStarter.current = startProactiveConversation;
 
   function compactResearchResult(result: unknown) {
     const json = JSON.stringify(result);
@@ -354,6 +434,57 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [nativeLiveMic, nativeMicSession, continuousListening, busy, speaking, xiaozhi.inputState, xiaozhi.startListening]);
 
+  useEffect(() => {
+    clearInterval(proactiveTimer.current);
+    if (!proactiveEnabled) return;
+    const idleThreshold = proactiveFrequency === 'lively' ? 120_000 : proactiveFrequency === 'balanced' ? 240_000 : 600_000;
+    const firstDelay = proactiveFrequency === 'lively' ? 18_000 : proactiveFrequency === 'balanced' ? 35_000 : 70_000;
+    const first = setTimeout(() => {
+      if (Date.now() - lastHumanInteractionAt.current >= firstDelay - 1500) proactiveStarter.current('welcome');
+    }, firstDelay);
+    proactiveTimer.current = setInterval(() => {
+      if (Date.now() - lastHumanInteractionAt.current >= idleThreshold) proactiveStarter.current('idle');
+    }, 20_000);
+    return () => { clearTimeout(first); clearInterval(proactiveTimer.current); };
+  }, [proactiveEnabled, proactiveFrequency]);
+
+  useEffect(() => {
+    if (previousWorld.current === worldId) return;
+    previousWorld.current = worldId;
+    clearTimeout(proactiveWorldTimer.current);
+    if (!proactiveEnabled) return;
+    proactiveWorldTimer.current = setTimeout(() => {
+      if (Date.now() - lastHumanInteractionAt.current >= 4500) proactiveStarter.current('world');
+    }, 5000);
+    return () => clearTimeout(proactiveWorldTimer.current);
+  }, [worldId, proactiveEnabled]);
+
+  useEffect(() => {
+    clearTimeout(proactiveActivityTimer.current);
+    if (!proactiveEnabled || living.activity === 'idle') return;
+    const delay = proactiveFrequency === 'lively' ? 4500 : proactiveFrequency === 'balanced' ? 6500 : 9500;
+    proactiveActivityTimer.current = setTimeout(() => {
+      if (Date.now() - lastHumanInteractionAt.current >= delay - 1000) proactiveStarter.current('idle');
+    }, delay);
+    return () => clearTimeout(proactiveActivityTimer.current);
+  }, [living.activity, proactiveEnabled, proactiveFrequency]);
+
+  useEffect(() => {
+    if (!continuousListening || !mainHandsFreeStart.current) return;
+    mainHandsFreeStart.current = false;
+    const timer = setTimeout(() => {
+      if (nativeLiveMic) {
+        setNativeMicSession(true);
+        setEmotion('curious');
+        void xiaozhi.startListening('auto').then((started) => { if (!started) setNativeMicSession(false); });
+      } else if (!voice.active) {
+        voice.start();
+        setEmotion('curious');
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [continuousListening, nativeLiveMic, xiaozhi.startListening, voice.active, voice.start]);
+
   useNativeApp(() => {
     if (computer) { closeComputer(); return true; }
     if (panel) { setPanel(null); return true; }
@@ -394,12 +525,24 @@ export default function App() {
       localStorage.setItem('mori-voice', JSON.stringify(voiceEnabled));
       localStorage.setItem('mori-continuous-listening', JSON.stringify(continuousListening));
       localStorage.setItem('mori-motion', JSON.stringify(gentleMotion));
+      localStorage.setItem('mori-theme-mode', JSON.stringify(themeMode));
+      localStorage.setItem('mori-theme-color', JSON.stringify(themeColor));
+      localStorage.setItem('mori-text-size', JSON.stringify(textSize));
+      localStorage.setItem('mori-font-style', JSON.stringify(fontStyle));
+      localStorage.setItem('mori-proactive-enabled', JSON.stringify(proactiveEnabled));
+      localStorage.setItem('mori-proactive-frequency', JSON.stringify(proactiveFrequency));
       localStorage.setItem('mori-bridge-url', JSON.stringify(config.bridgeUrl));
       localStorage.setItem('mori-xiaozhi-url', JSON.stringify(config.xiaozhiUrl));
       localStorage.setItem('mori-device-id', JSON.stringify(config.deviceId));
       localStorage.setItem('mori-client-id', JSON.stringify(config.clientId));
+      localStorage.setItem('mori-asr-mode', JSON.stringify(config.asrMode));
+      localStorage.setItem('mori-asr-languages', JSON.stringify(config.asrLanguages));
     } catch { /* Private browsing may not allow persistent storage. */ }
-  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId]);
+  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, themeMode, themeColor, textSize, fontStyle, proactiveEnabled, proactiveFrequency, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId, config.asrMode, config.asrLanguages]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+  }, [themeMode]);
 
   useEffect(() => {
     xiaozhi.setAudioEnabled(voiceEnabled);
@@ -433,6 +576,9 @@ export default function App() {
     clearTimeout(replyTimer.current);
     clearTimeout(responseTimeout.current);
     clearTimeout(researchDeliveryTimer.current);
+    clearInterval(proactiveTimer.current);
+    clearTimeout(proactiveWorldTimer.current);
+    clearTimeout(proactiveActivityTimer.current);
     clearTimeout(toastTimer.current);
     researchController.current?.abort();
     stopSpeech();
@@ -456,6 +602,7 @@ export default function App() {
   }
 
   function sendMessage(rawText: string) {
+    markHumanInteraction();
     const text = rawText.trim().slice(0, 2000);
     if (!text || busy) return;
     const requestedActivity = activityIntent(text);
@@ -518,6 +665,7 @@ export default function App() {
   }
 
   function toggleVoiceInput() {
+    markHumanInteraction();
     if (nativeLiveMic) {
       if (nativeMicSession) {
         setNativeMicSession(false);
@@ -551,13 +699,39 @@ export default function App() {
   }
 
   function toggleContinuousListeningMode() {
+    markHumanInteraction();
     const next = !continuousListening;
     if (!next) {
+      mainHandsFreeStart.current = false;
       if (nativeMicSession) { setNativeMicSession(false); void xiaozhi.stopListening(); }
       if (voice.active) voice.abort();
     }
     setContinuousListening(next);
     notify(next ? 'Hands-free listening is ready. Tap the microphone once and Lumi will keep listening, including in the computer.' : 'Hands-free listening is off.');
+  }
+
+  function toggleMainHandsFree() {
+    markHumanInteraction();
+    if (continuousListening) {
+      toggleContinuousListeningMode();
+      return;
+    }
+    mainHandsFreeStart.current = true;
+    setContinuousListening(true);
+    notify('Hands-free listening is on. Lumi will keep listening from the main screen and resume after each reply.');
+  }
+
+  function stopLumiSpeaking() {
+    markHumanInteraction();
+    proactiveSnoozedUntil.current = Date.now() + 10 * 60_000;
+    clearTimeout(replyTimer.current);
+    clearTimeout(responseTimeout.current);
+    stopSpeech();
+    xiaozhi.interrupt();
+    setSpeaking(false);
+    setBusy(false);
+    streamId.current = null;
+    notify(continuousListening ? 'Lumi stopped talking. Hands-free listening will stay on.' : 'Lumi stopped talking.');
   }
 
   function saveMemory(message: Message) {
@@ -663,7 +837,15 @@ export default function App() {
     setVoiceEnabled(true);
     setContinuousListening(false);
     setGentleMotion(false);
-    setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '' });
+    setThemeMode('light');
+    setThemeColor('sage');
+    setTextSize('normal');
+    setFontStyle('soft');
+    setProactiveEnabled(true);
+    setProactiveFrequency('balanced');
+    proactiveSnoozedUntil.current = 0;
+    lastProactiveAt.current = 0;
+    setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '', asrMode: 'server', asrLanguages: 'zh,en' });
     playGesture('idle', 'happy');
     notify('A fresh start for your little world.');
   }
@@ -676,7 +858,7 @@ export default function App() {
   ];
 
   return (
-    <div className={`app-shell ${reducedMotion ? 'gentle-motion' : ''}`}>
+    <div className={`app-shell theme-${themeMode} ${reducedMotion ? 'gentle-motion' : ''}`} style={appStyle} data-theme-color={themeColor} data-text-size={textSize} data-font-style={fontStyle} onPointerDown={markHumanInteraction}>
       <aside className="sidebar">
         <a className="brand" href="#" aria-label="Mori home" onClick={(event) => { event.preventDefault(); setPanel(null); setMobileChat(false); }}><MoriMark size={37} /><span>mori<span className="brand-period">.</span></span></a>
         <div className="sidebar-nav"><p className="sidebar-label">YOUR LITTLE SPACE</p><nav aria-label="Main navigation">{navItems.map(({ id, label, icon: Icon }) => <button key={label} className={`nav-item ${panel === id ? 'active' : ''}`} onClick={() => { setPanel(id); setMobileChat(false); }} title={label}><Icon size={19} strokeWidth={1.65} /><span>{label}</span>{id === 'memories' && memories.length > 0 && <small>{memories.length}</small>}{panel === id && <i />}</button>)}</nav></div>
@@ -704,7 +886,7 @@ export default function App() {
               <AnimatePresence>{gesture === 'breathe' && <motion.div className="breathing-indicator" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><span className={`breathing-circle ${breathIn ? 'inhale' : ''}`} /><span>{breathIn ? 'Breathe in, slowly...' : 'And gently let it go...'}</span></motion.div>}</AnimatePresence>
               <div className="world-bottom-shade" />
               <div className="companion-status"><span className={speaking || microphoneActive ? 'animated-status' : ''} />{microphoneListening ? "I'm listening" : microphoneActive && continuousListening ? "Hands-free listening is on" : speaking ? 'A little something to say' : living.activity !== 'idle' ? activityLabels[living.activity] : emotionLabels[emotion]}</div>
-              <div className="scene-footer"><div className="companion-identity"><p>YOUR LITTLE COMPANION</p><h2>{profile.companionName}<span><Sparkles size={16} strokeWidth={1.3} /></span></h2><span>A curious mind. A kind little heart.</span></div><div className="scene-actions"><button className="love-button" onClick={() => { playGesture('hug', 'love'); notify('A little love goes a long way.'); }} aria-label="Send a little love" title="Send a little love"><Heart size={20} strokeWidth={1.5} /></button><button className={`talk-button ${microphoneActive ? 'listening' : ''}`} onClick={toggleVoiceInput}>{microphoneListening ? <span className="sound-bars"><i /><i /><i /><i /></span> : <Mic size={19} strokeWidth={1.7} />}<span>{microphoneListening ? 'Listening...' : microphoneActive && continuousListening ? 'Hands-free on' : "Let's talk"}</span></button></div></div>
+              <div className="scene-footer"><div className="companion-identity"><p>YOUR LITTLE COMPANION</p><h2>{profile.companionName}<span><Sparkles size={16} strokeWidth={1.3} /></span></h2><span>A curious mind. A kind little heart.</span></div><div className="scene-actions"><button className="love-button" onClick={() => { playGesture('hug', 'love'); notify('A little love goes a long way.'); }} aria-label="Send a little love" title="Send a little love"><Heart size={20} strokeWidth={1.5} /></button><button className={`handsfree-main ${continuousListening ? 'active' : ''}`} onClick={toggleMainHandsFree} aria-pressed={continuousListening} title={continuousListening ? 'Turn off hands-free listening' : 'Turn on hands-free listening'}><Mic size={17} strokeWidth={1.7} /><span>{continuousListening ? 'Hands-free on' : 'Hands-free'}</span></button><button className={`talk-button ${microphoneActive ? 'listening' : ''}`} onClick={toggleVoiceInput}>{microphoneListening ? <span className="sound-bars"><i /><i /><i /><i /></span> : <Mic size={19} strokeWidth={1.7} />}<span>{microphoneListening ? 'Listening...' : microphoneActive && continuousListening ? 'Listening stays on' : "Let's talk"}</span></button>{(speaking || busy) && <button className="stop-speaking-button" onClick={stopLumiSpeaking} aria-label={`Stop ${profile.companionName} from talking`} title={`Stop ${profile.companionName}`}><VolumeX size={16} /><span>Stop {profile.companionName}</span></button>}</div></div>
               <button className="avatar-interact-hint" onClick={interactWithAvatar}><Hand size={12} />Tap {profile.companionName}. Make a little moment.</button>
             </motion.section>
             <div className="moment-bar"><span className="moment-label">The little things<span>make a big difference.</span></span><div className="moment-options"><button className={gesture === 'wave' ? 'active' : ''} onClick={() => playGesture('wave', 'happy')}><Hand size={17} strokeWidth={1.5} /><span>Say hello</span></button><button className={gesture === 'dance' ? 'active' : ''} onClick={() => playGesture('dance', 'excited')}><Music2 size={17} strokeWidth={1.5} /><span>Little dance</span></button><button className={gesture === 'breathe' ? 'active' : ''} onClick={() => playGesture('breathe', 'calm')}><Wind size={18} strokeWidth={1.5} /><span>Take a breath</span></button></div></div>
@@ -724,7 +906,7 @@ export default function App() {
         {panel === 'worlds' && <WorldsPanel selected={worldId} onSelect={selectWorld} home={living.home} onHomeChange={living.setHome} />}
         {panel === 'customize' && <CustomizePanel profile={profile} onChange={setProfile} onEmotion={(next) => { setEmotion(next); if (next === 'love') playGesture('hug', next); }} />}
         {panel === 'memories' && <MemoriesPanel memories={memories} companionName={profile.companionName} onDelete={(id) => { setMemories((previous) => previous.filter((memory) => memory.id !== id)); notify('Memory removed.'); }} onClose={closePanel} />}
-        {panel === 'settings' && <SettingsPanel config={config} onConfig={setConfig} status={xiaozhi.status} error={xiaozhi.error} onConnect={() => { stopSpeech(); clearTimeout(replyTimer.current); setBusy(false); setSpeaking(false); xiaozhi.connect(config); void xiaozhi.unlockAudio().catch(() => {}); }} onDisconnect={xiaozhi.disconnect} voiceEnabled={voiceEnabled} onVoiceToggle={() => setVoiceEnabled(!voiceEnabled)} continuousListening={continuousListening} onContinuousListeningToggle={toggleContinuousListeningMode} reducedMotion={reducedMotion} onMotionToggle={() => { if (prefersReducedMotion) notify('Your device has Reduce Motion enabled. Change your system accessibility setting to allow more motion.'); else setGentleMotion(!gentleMotion); }} onReset={resetData} />}
+        {panel === 'settings' && <SettingsPanel config={config} onConfig={setConfig} status={xiaozhi.status} error={xiaozhi.error} onConnect={() => { stopSpeech(); clearTimeout(replyTimer.current); setBusy(false); setSpeaking(false); xiaozhi.connect(config); void xiaozhi.unlockAudio().catch(() => {}); }} onDisconnect={xiaozhi.disconnect} voiceEnabled={voiceEnabled} onVoiceToggle={() => setVoiceEnabled(!voiceEnabled)} continuousListening={continuousListening} onContinuousListeningToggle={toggleContinuousListeningMode} proactiveEnabled={proactiveEnabled} onProactiveToggle={() => { markHumanInteraction(); const next = !proactiveEnabled; setProactiveEnabled(next); proactiveSnoozedUntil.current = next ? 0 : Date.now() + 10 * 60_000; }} proactiveFrequency={proactiveFrequency} onProactiveFrequency={setProactiveFrequency} themeMode={themeMode} onThemeMode={setThemeMode} themeColor={themeColor} onThemeColor={setThemeColor} textSize={textSize} onTextSize={setTextSize} fontStyle={fontStyle} onFontStyle={setFontStyle} reducedMotion={reducedMotion} onMotionToggle={() => { if (prefersReducedMotion) notify('Your device has Reduce Motion enabled. Change your system accessibility setting to allow more motion.'); else setGentleMotion(!gentleMotion); }} onReset={resetData} />}
       </PanelShell>}</AnimatePresence>
 
       <AnimatePresence>{computer && <Computer name={profile.companionName} request={computer} onClose={closeComputer} onAsk={sendMessage} connected={xiaozhi.status === 'connected'} assistantBusy={busy} assistantReply={[...messages].reverse().find((message) => message.role === 'assistant')?.text || ''} voiceActive={microphoneActive} listening={microphoneListening} continuousListening={continuousListening} voiceInterim={microphoneInterim} onVoice={toggleVoiceInput} onContinuousListeningToggle={toggleContinuousListeningMode} research={research} />}</AnimatePresence>

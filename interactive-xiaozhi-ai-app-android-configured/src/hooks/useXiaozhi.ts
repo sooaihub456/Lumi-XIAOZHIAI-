@@ -55,12 +55,26 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
   const connect = useCallback((config: ConnectionConfig) => {
     disconnect();
 
+    let officialHostedAsr = false;
+    if (isNative) {
+      try {
+        const host = new URL(config.xiaozhiUrl).hostname.toLowerCase();
+        officialHostedAsr = host === 'api.tenclass.net' || host === 'api.xiaozhi.me' || host.endsWith('.xiaozhi.me');
+      } catch { /* URL validation below will surface the actual connection error. */ }
+    }
+    // Keep the public hosted service on the official protocol only. The bilingual
+    // extension is sent only to a bridge/self-hosted endpoint that can honor it.
+    const bilingualAsr = config.asrMode === 'bilingual-auto' && !officialHostedAsr;
+    const asrLanguages = config.asrLanguages.split(',').map((language) => language.trim()).filter(Boolean).slice(0, 8);
     const hello = JSON.stringify({
       type: 'hello',
       version: 1,
-      features: { mcp: !!toolHandler.current },
+      features: { mcp: !!toolHandler.current, ...(bilingualAsr ? { mori_bilingual_asr: true } : {}) },
       transport: 'websocket',
       audio_params: { format: 'opus', sample_rate: 16000, channels: 1, frame_duration: 60 },
+      // Standard Xiaozhi servers ignore unknown fields. A compatible self-hosted
+      // gateway can use this extension to select an auto-language ASR provider.
+      ...(bilingualAsr ? { mori: { asr: { mode: 'auto', languages: asrLanguages.length ? asrLanguages : ['zh', 'en'] } } } : {}),
     });
 
     const handleTextMessage = (raw: string, send: (text: string) => void, fail: (message: string) => void) => {
@@ -210,6 +224,8 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
             deviceId: config.deviceId.trim(),
             clientId: config.clientId.trim(),
             token: config.token.trim(),
+            asrMode: bilingualAsr ? 'bilingual-auto' : 'server',
+            asrLanguages: config.asrLanguages,
           });
           if (generation !== nativeGeneration.current || failed) return;
           nativeActive.current = true;
@@ -256,6 +272,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
       timeout.current = setTimeout(() => fail('The connection timed out. Check that your bridge is running and your Xiaozhi credentials are paired.'), 15000);
       ws.onopen = () => ws.send(JSON.stringify({
         type: 'mori_connect', device_id: config.deviceId, client_id: config.clientId, token: config.token,
+        asr_mode: config.asrMode, asr_languages: config.asrLanguages,
       }));
       ws.onmessage = (message) => {
         if (socket.current !== ws) return;

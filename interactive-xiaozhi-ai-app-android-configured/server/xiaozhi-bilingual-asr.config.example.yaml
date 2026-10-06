@@ -1,0 +1,12 @@
+# Merge this into xiaozhi-esp32-server/data/.config.yaml when using local configuration.
+# If your deployment is manager-api controlled, configure the same ASR model in the manager UI.
+
+selected_module:
+  ASR: FunASR
+
+ASR:
+  FunASR:
+    type: fun_local
+    model_dir: models/SenseVoiceSmall
+    output_dir: tmp/
+    language: auto

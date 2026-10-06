@@ -51,6 +51,8 @@ websocketServer.on('connection', (client) => {
       const deviceId = process.env.XIAOZHI_DEVICE_ID || config.device_id;
       const clientId = process.env.XIAOZHI_CLIENT_ID || config.client_id;
       const token = process.env.XIAOZHI_TOKEN || config.token;
+      const asrMode = config.asr_mode === 'bilingual-auto' ? 'auto' : '';
+      const asrLanguages = typeof config.asr_languages === 'string' && /^[A-Za-z,-]{0,64}$/.test(config.asr_languages) ? config.asr_languages : 'zh,en';
       if (typeof deviceId !== 'string' || typeof clientId !== 'string' || !deviceId || !clientId) {
         fail('A paired Xiaozhi Device ID and Client ID are required.');
         return;
@@ -67,6 +69,7 @@ websocketServer.on('connection', (client) => {
           'Client-Id': clientId,
           'Protocol-Version': '1',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(asrMode ? { 'X-Mori-ASR-Mode': asrMode, 'X-Mori-ASR-Languages': asrLanguages || 'zh,en' } : {}),
         },
         handshakeTimeout: 10000,
         maxPayload: 4 * 1024 * 1024,

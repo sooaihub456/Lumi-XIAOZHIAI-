@@ -51,6 +51,8 @@ public class MoriXiaozhiPlugin extends Plugin {
     private String savedDeviceId = "";
     private String savedClientId = "";
     private String savedToken = "";
+    private String savedAsrMode = "server";
+    private String savedAsrLanguages = "zh,en";
     private String savedHello = "";
     private String savedSessionId = "";
     private NativeOpusPlayer audioPlayer;
@@ -246,6 +248,8 @@ public class MoriXiaozhiPlugin extends Plugin {
                 savedDeviceId = "";
                 savedClientId = "";
                 savedToken = "";
+                savedAsrMode = "server";
+                savedAsrLanguages = "zh,en";
             }
         }
         if (micRecorder != null) micRecorder.stop();
@@ -302,6 +306,8 @@ public class MoriXiaozhiPlugin extends Plugin {
         final String deviceId;
         final String clientId;
         final String token;
+        final String asrMode;
+        final String asrLanguages;
         final String hello;
         synchronized (socketLock) {
             if (candidate != generation || !reconnectEnabled) return;
@@ -309,6 +315,8 @@ public class MoriXiaozhiPlugin extends Plugin {
             deviceId = savedDeviceId;
             clientId = savedClientId;
             token = savedToken;
+            asrMode = savedAsrMode;
+            asrLanguages = savedAsrLanguages;
             hello = savedHello;
         }
 
@@ -317,8 +325,15 @@ public class MoriXiaozhiPlugin extends Plugin {
             .header("Device-Id", deviceId)
             .header("Client-Id", clientId)
             .header("Protocol-Version", "1")
-            .header("User-Agent", "Mori-Android/0.7");
+            .header("User-Agent", "Mori-Android/0.8");
         if (!token.trim().isEmpty()) builder.header("Authorization", "Bearer " + token);
+        // These optional headers are intentionally non-standard. Public Xiaozhi
+        // servers can ignore them; a self-hosted gateway may use them to choose
+        // an automatic multilingual ASR such as SenseVoice/FunASR language:auto.
+        if ("bilingual-auto".equals(asrMode)) {
+            builder.header("X-Mori-ASR-Mode", "auto");
+            builder.header("X-Mori-ASR-Languages", asrLanguages == null || asrLanguages.trim().isEmpty() ? "zh,en" : asrLanguages.trim());
+        }
 
         WebSocket created = client.newWebSocket(builder.build(), new WebSocketListener() {
             @Override
@@ -434,6 +449,8 @@ public class MoriXiaozhiPlugin extends Plugin {
         String deviceId = call.getString("deviceId", "").trim();
         String clientId = call.getString("clientId", "").trim();
         String token = call.getString("token", "").trim();
+        String asrMode = call.getString("asrMode", "server").trim();
+        String asrLanguages = call.getString("asrLanguages", "zh,en").trim();
 
         if (!validUrl(url)) {
             call.reject("Use a secure wss:// Xiaozhi WebSocket URL.");
@@ -443,6 +460,8 @@ public class MoriXiaozhiPlugin extends Plugin {
             call.reject("Invalid Xiaozhi connection credentials.");
             return;
         }
+        if (!"server".equals(asrMode) && !"bilingual-auto".equals(asrMode)) asrMode = "server";
+        if (!validCredential(asrLanguages, true) || asrLanguages.length() > 64 || !asrLanguages.matches("[A-Za-z,-]*")) asrLanguages = "zh,en";
 
         stopConnection(1000, "Replacing connection", true);
 
@@ -455,6 +474,8 @@ public class MoriXiaozhiPlugin extends Plugin {
             savedDeviceId = deviceId;
             savedClientId = clientId;
             savedToken = token;
+            savedAsrMode = asrMode;
+            savedAsrLanguages = asrLanguages.isEmpty() ? "zh,en" : asrLanguages;
             savedHello = "";
             savedSessionId = "";
         }

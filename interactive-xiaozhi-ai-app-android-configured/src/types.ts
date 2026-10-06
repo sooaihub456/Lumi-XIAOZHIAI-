@@ -4,6 +4,11 @@ export type WorldId = 'home' | 'garden' | 'clouds' | 'moon';
 export type Panel = 'worlds' | 'memories' | 'customize' | 'settings' | null;
 export type Activity = 'idle' | 'water' | 'read' | 'tea' | 'rest' | 'computer' | 'wander';
 export type Daylight = 'day' | 'golden' | 'night';
+export type ThemeMode = 'light' | 'dark';
+export type ThemeColor = 'sage' | 'lavender' | 'peach' | 'sky' | 'rose' | 'cocoa';
+export type TextSize = 'small' | 'normal' | 'large' | 'xlarge';
+export type FontStyle = 'soft' | 'clean' | 'system';
+export type ProactiveFrequency = 'calm' | 'balanced' | 'lively';
 
 export interface HomeSettings {
   daylight: Daylight;
@@ -48,12 +53,16 @@ export interface World {
   light: string;
 }
 
+export type AsrMode = 'server' | 'bilingual-auto';
+
 export interface ConnectionConfig {
   bridgeUrl: string;
   xiaozhiUrl: string;
   deviceId: string;
   clientId: string;
   token: string;
+  asrMode: AsrMode;
+  asrLanguages: string;
 }
 
 export type ConnectionStatus = 'demo' | 'connecting' | 'connected' | 'error';

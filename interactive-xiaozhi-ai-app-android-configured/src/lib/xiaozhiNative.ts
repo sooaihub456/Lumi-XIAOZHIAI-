@@ -37,7 +37,7 @@ export interface NativeXiaozhiAudioStateEvent {
 }
 
 interface NativeXiaozhiPlugin {
-  connect(options: { url: string; deviceId: string; clientId: string; token: string }): Promise<{ connected: boolean }>;
+  connect(options: { url: string; deviceId: string; clientId: string; token: string; asrMode?: 'server' | 'bilingual-auto'; asrLanguages?: string }): Promise<{ connected: boolean }>;
   send(options: { text: string }): Promise<void>;
   startListening(options: { mode: 'auto' | 'manual' | 'realtime' }): Promise<void>;
   stopListening(): Promise<void>;
