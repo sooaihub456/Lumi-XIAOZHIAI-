@@ -1,0 +1,328 @@
+diff --git a/BILINGUAL-ASR-PATCH.md b/BILINGUAL-ASR-PATCH.md
+new file mode 100644
+index 0000000..ce346b1
+--- /dev/null
++++ b/BILINGUAL-ASR-PATCH.md
+@@ -0,0 +1,55 @@
++# Lumi bilingual ASR patch (English + Chinese)
++
++This patch adds a **Bilingual auto-detect** option to Lumi without changing the current hosted Xiaozhi protocol. On Android, Lumi automatically suppresses the custom ASR extension for the known public hosted endpoints.
++
++## Important
++
++The public `xiaozhi.me` / hosted Xiaozhi service chooses the speech-recognition language on the server. The public WebSocket protocol does not expose a standard per-turn bilingual-language setting, so an Android-only patch cannot force the hosted service to recognize both languages.
++
++The new setting is intended for a **compatible/self-hosted Xiaozhi backend** whose ASR is configured for automatic language detection.
++
++## Recommended self-hosted configuration
++
++Current `xinnan-tech/xiaozhi-esp32-server` supports SenseVoice/FunASR automatic language detection. In `main/xiaozhi-server/data/.config.yaml` (or the equivalent manager-controlled model configuration), make sure the active ASR is FunASR and its language is `auto`:
++
++```yaml
++selected_module:
++  ASR: FunASR
++
++ASR:
++  FunASR:
++    type: fun_local
++    model_dir: models/SenseVoiceSmall
++    output_dir: tmp/
++    language: auto
++```
++
++SenseVoice supports language tags including `zh` and `en`, so the same ASR can recognize Mandarin/Chinese and English without changing the language selector between turns.
++
++## Lumi settings
++
++1. Open **Settings > Xiaozhi connection**.
++2. Point **Xiaozhi WebSocket URL** to your self-hosted server, for example `wss://your-domain/xiaozhi/v1/`.
++3. Set **Speech recognition mode** to **Bilingual auto-detect (English + Chinese)**.
++4. Leave **Preferred recognition languages** as `zh,en`.
++5. Reconnect.
++
++When enabled, Lumi also sends the optional hints:
++
++- HTTP header: `X-Mori-ASR-Mode: auto`
++- HTTP header: `X-Mori-ASR-Languages: zh,en`
++- `hello.mori.asr.mode = "auto"`
++- `hello.mori.asr.languages = ["zh", "en"]`
++
++These are deliberately optional/non-standard extensions. A normal Xiaozhi server may ignore them. The actual bilingual behavior comes from configuring the server ASR to automatic language detection.
++
++## Test phrases
++
++After reconnecting, test all four:
++
++- `Hello Lumi, how are you?`
++- `你好 Lumi，今天怎么样？`
++- `Lumi, can you tell me 今天的天气怎么样？`
++- `我想 ask you something about artificial intelligence.`
++
++The user transcript should preserve the correct English and Chinese words before the LLM response is generated.
+diff --git a/native/android/app/src/main/java/app/mori/companion/MoriXiaozhiPlugin.java b/native/android/app/src/main/java/app/mori/companion/MoriXiaozhiPlugin.java
+index 57aa6dc..299c94a 100644
+--- a/native/android/app/src/main/java/app/mori/companion/MoriXiaozhiPlugin.java
++++ b/native/android/app/src/main/java/app/mori/companion/MoriXiaozhiPlugin.java
+@@ -51,6 +51,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+     private String savedDeviceId = "";
+     private String savedClientId = "";
+     private String savedToken = "";
++    private String savedAsrMode = "server";
++    private String savedAsrLanguages = "zh,en";
+     private String savedHello = "";
+     private String savedSessionId = "";
+     private NativeOpusPlayer audioPlayer;
+@@ -246,6 +248,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+                 savedDeviceId = "";
+                 savedClientId = "";
+                 savedToken = "";
++                savedAsrMode = "server";
++                savedAsrLanguages = "zh,en";
+             }
+         }
+         if (micRecorder != null) micRecorder.stop();
+@@ -302,6 +306,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+         final String deviceId;
+         final String clientId;
+         final String token;
++        final String asrMode;
++        final String asrLanguages;
+         final String hello;
+         synchronized (socketLock) {
+             if (candidate != generation || !reconnectEnabled) return;
+@@ -309,6 +315,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+             deviceId = savedDeviceId;
+             clientId = savedClientId;
+             token = savedToken;
++            asrMode = savedAsrMode;
++            asrLanguages = savedAsrLanguages;
+             hello = savedHello;
+         }
+ 
+@@ -317,8 +325,15 @@ public class MoriXiaozhiPlugin extends Plugin {
+             .header("Device-Id", deviceId)
+             .header("Client-Id", clientId)
+             .header("Protocol-Version", "1")
+-            .header("User-Agent", "Mori-Android/0.7");
++            .header("User-Agent", "Mori-Android/0.8");
+         if (!token.trim().isEmpty()) builder.header("Authorization", "Bearer " + token);
++        // These optional headers are intentionally non-standard. Public Xiaozhi
++        // servers can ignore them; a self-hosted gateway may use them to choose
++        // an automatic multilingual ASR such as SenseVoice/FunASR language:auto.
++        if ("bilingual-auto".equals(asrMode)) {
++            builder.header("X-Mori-ASR-Mode", "auto");
++            builder.header("X-Mori-ASR-Languages", asrLanguages == null || asrLanguages.trim().isEmpty() ? "zh,en" : asrLanguages.trim());
++        }
+ 
+         WebSocket created = client.newWebSocket(builder.build(), new WebSocketListener() {
+             @Override
+@@ -434,6 +449,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+         String deviceId = call.getString("deviceId", "").trim();
+         String clientId = call.getString("clientId", "").trim();
+         String token = call.getString("token", "").trim();
++        String asrMode = call.getString("asrMode", "server").trim();
++        String asrLanguages = call.getString("asrLanguages", "zh,en").trim();
+ 
+         if (!validUrl(url)) {
+             call.reject("Use a secure wss:// Xiaozhi WebSocket URL.");
+@@ -443,6 +460,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+             call.reject("Invalid Xiaozhi connection credentials.");
+             return;
+         }
++        if (!"server".equals(asrMode) && !"bilingual-auto".equals(asrMode)) asrMode = "server";
++        if (!validCredential(asrLanguages, true) || asrLanguages.length() > 64 || !asrLanguages.matches("[A-Za-z,-]*")) asrLanguages = "zh,en";
+ 
+         stopConnection(1000, "Replacing connection", true);
+ 
+@@ -455,6 +474,8 @@ public class MoriXiaozhiPlugin extends Plugin {
+             savedDeviceId = deviceId;
+             savedClientId = clientId;
+             savedToken = token;
++            savedAsrMode = asrMode;
++            savedAsrLanguages = asrLanguages.isEmpty() ? "zh,en" : asrLanguages;
+             savedHello = "";
+             savedSessionId = "";
+         }
+diff --git a/server/xiaozhi-bilingual-asr.config.example.yaml b/server/xiaozhi-bilingual-asr.config.example.yaml
+new file mode 100644
+index 0000000..2c96b2d
+--- /dev/null
++++ b/server/xiaozhi-bilingual-asr.config.example.yaml
+@@ -0,0 +1,12 @@
++# Merge this into xiaozhi-esp32-server/data/.config.yaml when using local configuration.
++# If your deployment is manager-api controlled, configure the same ASR model in the manager UI.
++
++selected_module:
++  ASR: FunASR
++
++ASR:
++  FunASR:
++    type: fun_local
++    model_dir: models/SenseVoiceSmall
++    output_dir: tmp/
++    language: auto
+diff --git a/server/xiaozhi-bridge.mjs b/server/xiaozhi-bridge.mjs
+index 18db4a9..5041c2f 100644
+--- a/server/xiaozhi-bridge.mjs
++++ b/server/xiaozhi-bridge.mjs
+@@ -51,6 +51,8 @@ websocketServer.on('connection', (client) => {
+       const deviceId = process.env.XIAOZHI_DEVICE_ID || config.device_id;
+       const clientId = process.env.XIAOZHI_CLIENT_ID || config.client_id;
+       const token = process.env.XIAOZHI_TOKEN || config.token;
++      const asrMode = config.asr_mode === 'bilingual-auto' ? 'auto' : '';
++      const asrLanguages = typeof config.asr_languages === 'string' && /^[A-Za-z,-]{0,64}$/.test(config.asr_languages) ? config.asr_languages : 'zh,en';
+       if (typeof deviceId !== 'string' || typeof clientId !== 'string' || !deviceId || !clientId) {
+         fail('A paired Xiaozhi Device ID and Client ID are required.');
+         return;
+@@ -67,6 +69,7 @@ websocketServer.on('connection', (client) => {
+           'Client-Id': clientId,
+           'Protocol-Version': '1',
+           ...(token ? { Authorization: `Bearer ${token}` } : {}),
++          ...(asrMode ? { 'X-Mori-ASR-Mode': asrMode, 'X-Mori-ASR-Languages': asrLanguages || 'zh,en' } : {}),
+         },
+         handshakeTimeout: 10000,
+         maxPayload: 4 * 1024 * 1024,
+diff --git a/src/App.tsx b/src/App.tsx
+index a6d1109..da2b51f 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -60,7 +60,7 @@ export default function App() {
+   const [pendingResearchContexts, setPendingResearchContexts] = useState<string[]>([]);
+   const computerRef = useRef(computer);
+   computerRef.current = computer;
+-  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '' }));
++  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '', asrMode: readStored('mori-asr-mode', 'server'), asrLanguages: readStored('mori-asr-languages', 'zh,en') }));
+   const prefersReducedMotion = useReducedMotion();
+   const reducedMotion = gentleMotion || !!prefersReducedMotion;
+   const world = worlds.find((item) => item.id === worldId) ?? worlds[0];
+@@ -398,8 +398,10 @@ export default function App() {
+       localStorage.setItem('mori-xiaozhi-url', JSON.stringify(config.xiaozhiUrl));
+       localStorage.setItem('mori-device-id', JSON.stringify(config.deviceId));
+       localStorage.setItem('mori-client-id', JSON.stringify(config.clientId));
++      localStorage.setItem('mori-asr-mode', JSON.stringify(config.asrMode));
++      localStorage.setItem('mori-asr-languages', JSON.stringify(config.asrLanguages));
+     } catch { /* Private browsing may not allow persistent storage. */ }
+-  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId]);
++  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId, config.asrMode, config.asrLanguages]);
+ 
+   useEffect(() => {
+     xiaozhi.setAudioEnabled(voiceEnabled);
+@@ -663,7 +665,7 @@ export default function App() {
+     setVoiceEnabled(true);
+     setContinuousListening(false);
+     setGentleMotion(false);
+-    setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '' });
++    setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '', asrMode: 'server', asrLanguages: 'zh,en' });
+     playGesture('idle', 'happy');
+     notify('A fresh start for your little world.');
+   }
+diff --git a/src/components/Panels.tsx b/src/components/Panels.tsx
+index fb706c8..ed18d9c 100644
+--- a/src/components/Panels.tsx
++++ b/src/components/Panels.tsx
+@@ -104,11 +104,21 @@ export function SettingsPanel({ config, onConfig, status, error, onConnect, onDi
+       <label className="field-label" htmlFor="device-id">Paired Device ID</label><input id="device-id" className="text-field mono-field" placeholder="aa:bb:cc:dd:ee:ff" value={config.deviceId} onChange={(event) => onConfig({ ...config, deviceId: event.target.value })} required disabled={locked} maxLength={128} />
+       <label className="field-label" htmlFor="client-id">Paired Client ID</label><input id="client-id" className="text-field mono-field" placeholder="Your paired device UUID" value={config.clientId} onChange={(event) => onConfig({ ...config, clientId: event.target.value })} required disabled={locked} maxLength={128} />
+       <label className="field-label" htmlFor="access-token">Access token<span>Kept in this session only</span></label><div className="password-field"><input id="access-token" className="text-field mono-field" type={showToken ? 'text' : 'password'} placeholder="Your paired Xiaozhi token" value={config.token} onChange={(event) => onConfig({ ...config, token: event.target.value })} disabled={locked} autoComplete="off" /><button type="button" onClick={() => setShowToken(!showToken)} aria-label={showToken ? 'Hide token' : 'Show token'}>{showToken ? <EyeOff size={17} /> : <Eye size={17} />}</button></div>
++      <label className="field-label" htmlFor="asr-mode">Speech recognition mode</label>
++      <select id="asr-mode" className="text-field" value={config.asrMode} onChange={(event) => onConfig({ ...config, asrMode: event.target.value as ConnectionConfig['asrMode'] })} disabled={locked}>
++        <option value="server">Server/console language (default)</option>
++        <option value="bilingual-auto">Bilingual auto-detect (English + Chinese)</option>
++      </select>
++      {config.asrMode === 'bilingual-auto' && <>
++        <label className="field-label" htmlFor="asr-languages">Preferred recognition languages</label>
++        <input id="asr-languages" className="text-field mono-field" value={config.asrLanguages} onChange={(event) => onConfig({ ...config, asrLanguages: event.target.value })} placeholder="zh,en" disabled={locked} maxLength={64} />
++        <p className="field-hint"><strong>Bilingual mode needs a compatible/self-hosted Xiaozhi backend.</strong> The public xiaozhi.me service controls ASR language on its server, so this app cannot override the console language by itself. For xiaozhi-esp32-server, use FunASR/SenseVoice with <code>language: auto</code>.</p>
++      </>}
+       {error && <p className="connection-error" role="alert">{error}</p>}
+       {status === 'connected' ? <button type="button" className="secondary-button full-width" onClick={onDisconnect}>Disconnect & return to local preview</button> : <button className="primary-button full-width" disabled={status === 'connecting'} type="submit">{status === 'connecting' ? <><LoaderCircle size={17} className="spin" />Connecting...</> : <><PlugZap size={17} />Connect to Xiaozhi<ArrowRight size={16} /></>}</button>}
+       {status === 'connecting' && <button type="button" className="text-button" onClick={onDisconnect}>Cancel connection</button>}
+     </form>
+-    <details className="connection-guide"><summary>Need a little help connecting?<ChevronDown size={16} /></summary><div>{isNative ? <><p>1. Enter the Device ID, Client ID, and access token from the same paired Xiaozhi device.</p><p>2. Leave the Xiaozhi WebSocket URL at <code>wss://api.tenclass.net/xiaozhi/v1/</code> unless your device was paired to a different/self-hosted server.</p><p>3. Tap Connect to Xiaozhi. The Android app sends the required Authorization, Device-Id, Client-Id, and Protocol-Version headers natively, so no bridge or tunnel is required.</p></> : <><p>1. Copy your existing paired Device ID, Client ID, and token from your Xiaozhi setup.</p><p>2. Run the included bridge:</p><code>node --env-file=.env server/xiaozhi-bridge.mjs</code><p>3. Add your app origin to ALLOWED_ORIGINS and enter the bridge's ws:// or wss:// URL above.</p></>}<p>{isNative ? 'Live Xiaozhi voice input streams microphone audio directly as Opus. Android speech recognition is used only for local/non-Xiaozhi fallback.' : 'Voice input uses your browser\'s speech recognition.'} Xiaozhi replies stream back as text, emotions, and Opus audio.</p><a href="https://xiaozhi.dev/en/docs/development/websocket/" target="_blank" rel="noreferrer">Xiaozhi protocol documentation<ExternalLink size={13} /></a></div></details>
++    <details className="connection-guide"><summary>Need a little help connecting?<ChevronDown size={16} /></summary><div>{isNative ? <><p>1. Enter the Device ID, Client ID, and access token from the same paired Xiaozhi device.</p><p>2. Leave the Xiaozhi WebSocket URL at <code>wss://api.tenclass.net/xiaozhi/v1/</code> unless your device was paired to a different/self-hosted server.</p><p>3. Tap Connect to Xiaozhi. The Android app sends the required Authorization, Device-Id, Client-Id, and Protocol-Version headers natively, so no bridge or tunnel is required.</p></> : <><p>1. Copy your existing paired Device ID, Client ID, and token from your Xiaozhi setup.</p><p>2. Run the included bridge:</p><code>node --env-file=.env server/xiaozhi-bridge.mjs</code><p>3. Add your app origin to ALLOWED_ORIGINS and enter the bridge's ws:// or wss:// URL above.</p></>}<p>{isNative ? 'Live Xiaozhi voice input streams microphone audio directly as Opus. Android speech recognition is used only for local/non-Xiaozhi fallback.' : 'Voice input uses your browser\'s speech recognition.'} Xiaozhi replies stream back as text, emotions, and Opus audio.</p><p>For bilingual English/Chinese recognition, connect to a backend whose ASR is configured for automatic language detection. The app sends an optional Mori ASR hint when Bilingual auto-detect is enabled.</p><a href="https://xiaozhi.dev/en/docs/development/websocket/" target="_blank" rel="noreferrer">Xiaozhi protocol documentation<ExternalLink size={13} /></a></div></details>
+     <div className="preferences-section"><h3>The little things</h3><div className="preference-row"><Volume2 size={18} /><div><strong>Companion voice</strong><p>Let your little companion speak</p></div><button role="switch" aria-checked={voiceEnabled} aria-label="Companion voice" className={`toggle ${voiceEnabled ? 'on' : ''}`} onClick={onVoiceToggle}><span /></button></div><div className="preference-row"><Mic size={18} /><div><strong>Hands-free listening</strong><p>Tap the microphone once and Lumi keeps listening until you stop it. Listening pauses automatically while Lumi replies.</p></div><button role="switch" aria-checked={continuousListening} aria-label="Hands-free listening" className={`toggle ${continuousListening ? 'on' : ''}`} onClick={onContinuousListeningToggle}><span /></button></div><div className="preference-row"><Settings2 size={18} /><div><strong>Gentler motion</strong><p>Less animation, the same good company</p></div><button role="switch" aria-checked={reducedMotion} aria-label="Reduce motion" className={`toggle ${reducedMotion ? 'on' : ''}`} onClick={onMotionToggle}><span /></button></div></div>
+     <div className="reset-section">{confirmReset ? <><p>Clear this browser's conversations, memories, and personalizations? This cannot be undone.</p><div><button className="text-button" onClick={() => setConfirmReset(false)}>Keep my little world</button><button className="text-button danger" onClick={() => { onReset(); setConfirmReset(false); }}>Yes, start fresh</button></div></> : <button className="text-button" onClick={() => setConfirmReset(true)}><Trash2 size={14} />Reset local data</button>}</div>
+   </>;
+diff --git a/src/hooks/useXiaozhi.ts b/src/hooks/useXiaozhi.ts
+index df1d986..eb11a6e 100644
+--- a/src/hooks/useXiaozhi.ts
++++ b/src/hooks/useXiaozhi.ts
+@@ -55,12 +55,26 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
+   const connect = useCallback((config: ConnectionConfig) => {
+     disconnect();
+ 
++    let officialHostedAsr = false;
++    if (isNative) {
++      try {
++        const host = new URL(config.xiaozhiUrl).hostname.toLowerCase();
++        officialHostedAsr = host === 'api.tenclass.net' || host === 'api.xiaozhi.me' || host.endsWith('.xiaozhi.me');
++      } catch { /* URL validation below will surface the actual connection error. */ }
++    }
++    // Keep the public hosted service on the official protocol only. The bilingual
++    // extension is sent only to a bridge/self-hosted endpoint that can honor it.
++    const bilingualAsr = config.asrMode === 'bilingual-auto' && !officialHostedAsr;
++    const asrLanguages = config.asrLanguages.split(',').map((language) => language.trim()).filter(Boolean).slice(0, 8);
+     const hello = JSON.stringify({
+       type: 'hello',
+       version: 1,
+-      features: { mcp: !!toolHandler.current },
++      features: { mcp: !!toolHandler.current, ...(bilingualAsr ? { mori_bilingual_asr: true } : {}) },
+       transport: 'websocket',
+       audio_params: { format: 'opus', sample_rate: 16000, channels: 1, frame_duration: 60 },
++      // Standard Xiaozhi servers ignore unknown fields. A compatible self-hosted
++      // gateway can use this extension to select an auto-language ASR provider.
++      ...(bilingualAsr ? { mori: { asr: { mode: 'auto', languages: asrLanguages.length ? asrLanguages : ['zh', 'en'] } } } : {}),
+     });
+ 
+     const handleTextMessage = (raw: string, send: (text: string) => void, fail: (message: string) => void) => {
+@@ -210,6 +224,8 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
+             deviceId: config.deviceId.trim(),
+             clientId: config.clientId.trim(),
+             token: config.token.trim(),
++            asrMode: bilingualAsr ? 'bilingual-auto' : 'server',
++            asrLanguages: config.asrLanguages,
+           });
+           if (generation !== nativeGeneration.current || failed) return;
+           nativeActive.current = true;
+@@ -256,6 +272,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
+       timeout.current = setTimeout(() => fail('The connection timed out. Check that your bridge is running and your Xiaozhi credentials are paired.'), 15000);
+       ws.onopen = () => ws.send(JSON.stringify({
+         type: 'mori_connect', device_id: config.deviceId, client_id: config.clientId, token: config.token,
++        asr_mode: config.asrMode, asr_languages: config.asrLanguages,
+       }));
+       ws.onmessage = (message) => {
+         if (socket.current !== ws) return;
+diff --git a/src/lib/xiaozhiNative.ts b/src/lib/xiaozhiNative.ts
+index bcc5fa0..749153c 100644
+--- a/src/lib/xiaozhiNative.ts
++++ b/src/lib/xiaozhiNative.ts
+@@ -37,7 +37,7 @@ export interface NativeXiaozhiAudioStateEvent {
+ }
+ 
+ interface NativeXiaozhiPlugin {
+-  connect(options: { url: string; deviceId: string; clientId: string; token: string }): Promise<{ connected: boolean }>;
++  connect(options: { url: string; deviceId: string; clientId: string; token: string; asrMode?: 'server' | 'bilingual-auto'; asrLanguages?: string }): Promise<{ connected: boolean }>;
+   send(options: { text: string }): Promise<void>;
+   startListening(options: { mode: 'auto' | 'manual' | 'realtime' }): Promise<void>;
+   stopListening(): Promise<void>;
+diff --git a/src/types.ts b/src/types.ts
+index cd61c14..490b0d9 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -48,12 +48,16 @@ export interface World {
+   light: string;
+ }
+ 
++export type AsrMode = 'server' | 'bilingual-auto';
++
+ export interface ConnectionConfig {
+   bridgeUrl: string;
+   xiaozhiUrl: string;
+   deviceId: string;
+   clientId: string;
+   token: string;
++  asrMode: AsrMode;
++  asrLanguages: string;
+ }
+ 
+ export type ConnectionStatus = 'demo' | 'connecting' | 'connected' | 'error';
