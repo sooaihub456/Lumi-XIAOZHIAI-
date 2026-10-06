@@ -530,3 +530,78 @@ html[data-platform='desktop'] .computer-window { width: min(1210px, 100%); heigh
 }
 html[data-theme='dark'], html[data-theme='dark'] body { background: #101510; }
 html[data-theme='light'], html[data-theme='light'] body { background: #fcfcf9; }
+
+/* Daily tools: weather, navigation and reminders */
+.utilities-panel-shell { width: min(650px, calc(100vw - 32px)); }
+.utility-grid { display: grid; gap: 14px; }
+.utility-card { border: 1px solid #e3e9dc; border-radius: 16px; background: #fbfcf7; padding: 18px; box-shadow: 0 7px 22px #6174510b; }
+.utility-card-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 15px; }
+.utility-card-heading > span { width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; background: color-mix(in srgb, var(--accent-light) 72%, #fff 28%); color: var(--accent-dark); }
+.utility-card-heading .eyebrow { margin: 0 0 4px; font-size: calc(7px * var(--font-scale, 1)); letter-spacing: 1.1px; color: #9ba98c; }
+.utility-card-heading h3 { margin: 0; color: #697d58; font-size: calc(15px * var(--font-scale, 1)); font-weight: 550; letter-spacing: -.25px; }
+.utility-inline-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.utility-action-button, .utility-icon-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--accent-main) 40%, #dfe7d8 60%); background: color-mix(in srgb, var(--accent-light) 60%, #fff 40%); color: var(--accent-dark); min-height: 39px; padding: 0 13px; font-size: calc(9px * var(--font-scale, 1)); }
+.utility-action-button:disabled, .utility-icon-button:disabled { opacity: .45; cursor: default; }
+.utility-spin { animation: utility-spin .9s linear infinite; }
+@keyframes utility-spin { to { transform: rotate(360deg); } }
+.utility-hint, .utility-empty { margin: 12px 1px 0; color: #9aa98c; font-size: calc(9px * var(--font-scale, 1)); line-height: 1.65; }
+.weather-result { margin-top: 13px; padding: 14px; border-radius: 12px; background: color-mix(in srgb, var(--accent-light) 36%, #fff 64%); }
+.weather-result > div:first-child { display: flex; align-items: baseline; gap: 10px; }
+.weather-result > div:first-child strong { font-size: calc(34px * var(--font-scale, 1)); color: var(--accent-dark); font-weight: 500; letter-spacing: -1.5px; }
+.weather-result > div:first-child span { font-size: calc(11px * var(--font-scale, 1)); color: #788b68; }
+.weather-result > p { margin: 1px 0 11px; color: #9aaa8c; font-size: calc(9px * var(--font-scale, 1)); }
+.weather-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.weather-stats span { padding: 5px 8px; border-radius: 999px; background: #ffffff9e; border: 1px solid #e7ebdf; color: #829473; font-size: calc(8px * var(--font-scale, 1)); }
+.utility-stack-form { display: grid; gap: 9px; }
+.utility-wide-button { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 41px; }
+.reminder-create { display: grid; grid-template-columns: minmax(0, 1fr) 110px 40px; gap: 7px; align-items: center; }
+.reminder-time { text-align: center; }
+.utility-icon-button { width: 40px; padding: 0; }
+.next-reminder { display: flex; align-items: center; gap: 6px; margin: 13px 0 4px; color: #8b9c7d; font-size: calc(8.5px * var(--font-scale, 1)); }
+.next-reminder strong { font-weight: 550; color: #708661; }
+.reminder-list { display: grid; gap: 7px; margin-top: 12px; }
+.reminder-row { display: grid; grid-template-columns: 28px 1fr 30px; gap: 8px; align-items: center; padding: 9px 10px; border-radius: 11px; background: #f5f8f0; border: 1px solid #e7ecdf; }
+.reminder-row.disabled { opacity: .55; }
+.reminder-row > div { min-width: 0; }
+.reminder-row strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #738564; font-size: calc(9.5px * var(--font-scale, 1)); font-weight: 550; }
+.reminder-row > div > span { display: block; margin-top: 3px; color: #9aa98e; font-size: calc(7.8px * var(--font-scale, 1)); }
+.reminder-toggle-dot { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #e7ece2; }
+.reminder-toggle-dot > span { width: 8px; height: 8px; border-radius: 50%; background: #aab6a0; }
+.reminder-toggle-dot.on { background: color-mix(in srgb, var(--accent-light) 70%, #fff 30%); }
+.reminder-toggle-dot.on > span { background: var(--accent-dark); }
+.utility-delete { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: transparent; color: #b19388; }
+.utility-delete:hover { background: #f5e9e4; color: #9d6f62; }
+.utility-voice-tip { margin-top: 16px; padding: 13px 15px; border-radius: 13px; background: color-mix(in srgb, var(--accent-light) 22%, #f8faf5 78%); border: 1px dashed color-mix(in srgb, var(--accent-main) 35%, #dfe6d9 65%); }
+.utility-voice-tip > span { color: var(--accent-dark); font-size: calc(8px * var(--font-scale, 1)); font-weight: 600; text-transform: uppercase; letter-spacing: .8px; }
+.utility-voice-tip p { margin: 5px 0 0; color: #899a7b; font-size: calc(9px * var(--font-scale, 1)); line-height: 1.65; }
+
+.app-shell.theme-dark .utility-card { background: #171f17; border-color: #2d382d; box-shadow: none; }
+.app-shell.theme-dark .utility-card-heading h3,
+.app-shell.theme-dark .reminder-row strong { color: #c7d4c3; }
+.app-shell.theme-dark .utility-card-heading .eyebrow,
+.app-shell.theme-dark .utility-hint,
+.app-shell.theme-dark .utility-empty,
+.app-shell.theme-dark .weather-result > p,
+.app-shell.theme-dark .reminder-row > div > span,
+.app-shell.theme-dark .utility-voice-tip p { color: #8e9d8a; }
+.app-shell.theme-dark .weather-result,
+.app-shell.theme-dark .reminder-row,
+.app-shell.theme-dark .utility-voice-tip { background: #1c261c; border-color: #303b30; }
+.app-shell.theme-dark .weather-stats span { background: #253025; border-color: #344034; color: #aab8a6; }
+.app-shell.theme-dark .utility-action-button,
+.app-shell.theme-dark .utility-icon-button { background: #223022; border-color: #354335; color: #cfdbcb; }
+.app-shell.theme-dark .reminder-toggle-dot { background: #303a30; }
+
+@media (max-width: 600px) {
+  .utilities-panel-shell { width: 100%; }
+  .utility-card { padding: 15px; }
+  .utility-inline-form { grid-template-columns: 1fr; }
+  .utility-action-button { width: 100%; }
+  .reminder-create { grid-template-columns: 1fr 94px 38px; }
+}
+
+@media (max-width: 410px) {
+  .reminder-create { grid-template-columns: 1fr 38px; }
+  .reminder-create .reminder-time { grid-column: 1 / -1; grid-row: 2; }
+  .utility-icon-button { grid-column: 2; grid-row: 1; }
+}

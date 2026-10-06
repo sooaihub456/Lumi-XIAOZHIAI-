@@ -1,7 +1,7 @@
 export type Emotion = 'happy' | 'curious' | 'calm' | 'excited' | 'love' | 'sad';
 export type Gesture = 'idle' | 'wave' | 'dance' | 'hug' | 'breathe';
 export type WorldId = 'home' | 'garden' | 'clouds' | 'moon';
-export type Panel = 'worlds' | 'memories' | 'customize' | 'settings' | null;
+export type Panel = 'worlds' | 'memories' | 'customize' | 'utilities' | 'settings' | null;
 export type Activity = 'idle' | 'water' | 'read' | 'tea' | 'rest' | 'computer' | 'wander';
 export type Daylight = 'day' | 'golden' | 'night';
 export type ThemeMode = 'light' | 'dark';
@@ -16,6 +16,32 @@ export interface HomeSettings {
   autonomous: boolean;
   decor: 'oak' | 'cream' | 'walnut';
   plantGrowth: number;
+}
+
+
+
+export interface WeatherReport {
+  location: string;
+  country?: string;
+  timezone?: string;
+  temperature: number;
+  apparentTemperature: number;
+  humidity: number;
+  windSpeed: number;
+  weatherCode: number;
+  condition: string;
+  high: number;
+  low: number;
+  precipitationChance: number;
+  updatedAt: number;
+}
+
+export interface DailyReminder {
+  id: number;
+  title: string;
+  time: string;
+  enabled: boolean;
+  createdAt: number;
 }
 
 export interface Message {

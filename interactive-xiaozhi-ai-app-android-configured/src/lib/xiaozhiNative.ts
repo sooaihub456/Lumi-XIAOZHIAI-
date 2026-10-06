@@ -41,6 +41,7 @@ interface NativeXiaozhiPlugin {
   send(options: { text: string }): Promise<void>;
   startListening(options: { mode: 'auto' | 'manual' | 'realtime' }): Promise<void>;
   stopListening(): Promise<void>;
+  triggerProactive(options: { wakeWord?: string }): Promise<{ triggered: boolean }>;
   stopAudio(): Promise<void>;
   setAudioEnabled(options: { enabled: boolean }): Promise<void>;
   disconnect(): Promise<void>;

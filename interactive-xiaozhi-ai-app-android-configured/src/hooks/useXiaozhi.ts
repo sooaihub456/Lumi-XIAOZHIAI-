@@ -346,6 +346,17 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     }
   }, [status]);
 
+  const triggerProactive = useCallback(async (wakeWord = '你好小智') => {
+    if (!isNative || status !== 'connected' || !nativeActive.current) return false;
+    try {
+      const result = await NativeXiaozhi.triggerProactive({ wakeWord });
+      return !!result.triggered;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not ask Xiaozhi to start a proactive conversation.');
+      return false;
+    }
+  }, [status]);
+
   const stopListening = useCallback(async () => {
     if (!isNative) return;
     setInputState('idle');
@@ -376,5 +387,5 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
     audio.current = null;
   }, [removeNativeListeners]);
 
-  return { status, error, audioState, inputState, connect, disconnect, sendText, sendContext, startListening, stopListening, interrupt, getAudio, unlockAudio, setAudioEnabled };
+  return { status, error, audioState, inputState, connect, disconnect, sendText, sendContext, startListening, stopListening, triggerProactive, interrupt, getAudio, unlockAudio, setAudioEnabled };
 }

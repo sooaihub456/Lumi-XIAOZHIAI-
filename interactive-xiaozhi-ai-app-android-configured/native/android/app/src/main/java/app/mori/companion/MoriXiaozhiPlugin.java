@@ -538,6 +538,49 @@ public class MoriXiaozhiPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void triggerProactive(PluginCall call) {
+        String wakeWord = call.getString("wakeWord", "你好小智");
+        if (wakeWord == null) wakeWord = "你好小智";
+        wakeWord = wakeWord.trim();
+        // listen/state=detect is reserved for an actual wake-word event. Keep the
+        // payload deliberately short and wake-word-like so hosted Xiaozhi accepts
+        // it and generates the reply/TTS with the agent's configured Xiaozhi voice.
+        if (wakeWord.isEmpty() || wakeWord.length() > 32 || wakeWord.contains("\n") || wakeWord.contains("\r")) {
+            call.reject("Invalid proactive wake word.");
+            return;
+        }
+        if (micRecorder != null) micRecorder.stop();
+
+        final WebSocket current;
+        final String sessionId;
+        synchronized (socketLock) {
+            current = socket;
+            sessionId = savedSessionId;
+        }
+        if (current == null || sessionId == null || sessionId.isEmpty()) {
+            call.reject("Xiaozhi is not ready for a proactive turn yet.");
+            return;
+        }
+        try {
+            JSONObject message = new JSONObject();
+            message.put("session_id", sessionId);
+            message.put("type", "listen");
+            message.put("state", "detect");
+            message.put("text", wakeWord);
+            boolean sent = current.send(message.toString());
+            if (!sent) {
+                call.reject("Xiaozhi could not accept the proactive wake event.");
+                return;
+            }
+            JSObject result = new JSObject();
+            result.put("triggered", true);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject("Could not start a proactive Xiaozhi turn: " + error.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void stopListening(PluginCall call) {
         if (micRecorder != null) micRecorder.stop();
         sendListenState("stop", null);

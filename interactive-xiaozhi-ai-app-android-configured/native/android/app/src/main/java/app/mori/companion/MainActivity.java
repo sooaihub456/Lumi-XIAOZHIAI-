@@ -13,6 +13,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(MoriBrowserPlugin.class);
         registerPlugin(MoriXiaozhiPlugin.class);
+        registerPlugin(MoriUtilitiesPlugin.class);
         super.onCreate(savedInstanceState);
 
         // Configure the packaged app WebView for reliable Android phone use.

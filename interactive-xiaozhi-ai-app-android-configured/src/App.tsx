@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { ArrowUpRight, Bookmark, Camera, Check, ChevronDown, ChevronRight, ChevronsUpDown, Flower2, Globe2, Hand, Heart, Leaf, Maximize2, MessageCircle, Mic, Minimize2, Monitor, Music2, PlugZap, Settings, ShieldCheck, SlidersHorizontal, Smile, Sparkles, Sprout, Sun, Volume2, VolumeX, Wind, X } from 'lucide-react';
+import { ArrowUpRight, Bookmark, Camera, Check, ChevronDown, ChevronRight, ChevronsUpDown, Compass, Flower2, Globe2, Hand, Heart, Infinity as InfinityIcon, Leaf, Maximize2, MessageCircle, Mic, Minimize2, Monitor, Music2, PlugZap, Settings, ShieldCheck, SlidersHorizontal, Smile, Sparkles, Sprout, Sun, Volume2, VolumeX, Wind, X } from 'lucide-react';
 import Avatar from './components/Avatar';
 import { LumiIcon, MoriMark } from './components/Brand';
 import ChatPanel from './components/ChatPanel';
 import Computer from './components/Computer';
 import WorldDock from './components/WorldDock';
 import { CustomizePanel, MemoriesPanel, PanelShell, SettingsPanel, WorldsPanel } from './components/Panels';
+import UtilitiesPanel from './components/UtilitiesPanel';
 import { activityIntent, activityLabels, colors, defaultHome, defaultProfile, demoReply, emotionLabels, normalizeEmotion, readStored, uid, welcomeMessages, worlds } from './data';
 import { useVoice } from './hooks/useVoice';
 import { useXiaozhi } from './hooks/useXiaozhi';
@@ -19,8 +20,9 @@ import { desktopBridge } from './lib/desktop';
 import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
 import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
+import { cancelNativeReminder, getWeather, newReminderId, openNavigation, scheduleNativeReminder, validateReminderTime, weatherSummary } from './lib/utilities';
 import { isNative } from './lib/platform';
-import type { Activity, ConnectionConfig, Emotion, FontStyle, Gesture, Memory, Message, Panel, ProactiveFrequency, Profile, TextSize, ThemeColor, ThemeMode, WorldId, XiaozhiEvent } from './types';
+import type { Activity, ConnectionConfig, DailyReminder, Emotion, FontStyle, Gesture, Memory, Message, Panel, ProactiveFrequency, Profile, TextSize, ThemeColor, ThemeMode, WeatherReport, WorldId, XiaozhiEvent } from './types';
 
 type BrowserResearchState = {
   id: string;
@@ -34,6 +36,7 @@ const panelTitles = {
   worlds: { title: 'A change of scenery.', eyebrow: 'YOUR LITTLE WORLDS' },
   memories: { title: 'The moments that stay.', eyebrow: 'YOUR LITTLE KEEPSAKES' },
   customize: { title: 'A little more you.', eyebrow: 'MEET YOUR COMPANION' },
+  utilities: { title: 'Little everyday helpers.', eyebrow: 'WEATHER · MAPS · REMINDERS' },
   settings: { title: 'A real connection.', eyebrow: 'POWERED BY XIAOZHI AI' },
 };
 
@@ -56,6 +59,10 @@ export default function App() {
   const [fontStyle, setFontStyle] = useState<FontStyle>(() => readStored('mori-font-style', 'soft'));
   const [proactiveEnabled, setProactiveEnabled] = useState(() => readStored('mori-proactive-enabled', true));
   const [proactiveFrequency, setProactiveFrequency] = useState<ProactiveFrequency>(() => readStored('mori-proactive-frequency', 'balanced'));
+  const [weatherLocation, setWeatherLocation] = useState(() => readStored('mori-weather-location', 'Singapore'));
+  const [weatherReport, setWeatherReport] = useState<WeatherReport | null>(() => readStored('mori-weather-report', null));
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [reminders, setReminders] = useState<DailyReminder[]>(() => readStored('mori-daily-reminders', []));
   const [panel, setPanel] = useState<Panel>(null);
   const [mobileChat, setMobileChat] = useState(false);
   const [immersive, setImmersive] = useState(false);
@@ -93,6 +100,8 @@ export default function App() {
   const lastProactiveAt = useRef(0);
   const lastHumanInteractionAt = useRef(Date.now());
   const proactiveSnoozedUntil = useRef(0);
+  const proactiveWakeUntil = useRef(0);
+  const webReminderFired = useRef(new Set<string>());
   const mainHandsFreeStart = useRef(false);
   const proactiveStarter = useRef<(cue: 'welcome' | 'idle' | 'world') => void>(() => {});
   const previousWorld = useRef(worldId);
@@ -153,6 +162,69 @@ export default function App() {
     living.doActivity(next, destination);
   }
 
+  async function refreshWeather(location = weatherLocation) {
+    const target = location.trim();
+    if (!target) { notify('Enter a city or place for the weather report.'); return null; }
+    setWeatherLoading(true);
+    try {
+      const report = await getWeather(target);
+      setWeatherLocation(target);
+      setWeatherReport(report);
+      return report;
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'The weather report could not be loaded.');
+      return null;
+    } finally {
+      setWeatherLoading(false);
+    }
+  }
+
+  async function navigateTo(destination: string) {
+    try {
+      const result = await openNavigation(destination);
+      notify(`Opening directions to ${destination.trim()}.`);
+      return result;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Navigation could not be opened.';
+      notify(message);
+      throw cause instanceof Error ? cause : new Error(message);
+    }
+  }
+
+  async function addDailyReminder(title: string, time: string) {
+    const cleanTitle = title.trim().slice(0, 100);
+    if (!cleanTitle) throw new Error('Add something for Lumi to remind you about.');
+    const cleanTime = validateReminderTime(time);
+    const reminder: DailyReminder = { id: newReminderId(), title: cleanTitle, time: cleanTime, enabled: true, createdAt: Date.now() };
+    setReminders((previous) => [reminder, ...previous].slice(0, 40));
+    try {
+      const result = await scheduleNativeReminder(reminder);
+      if ('permissionRequested' in result && result.permissionRequested) notify('Allow notifications so Lumi can deliver this reminder even when the app is in the background.');
+      else notify(`Daily reminder set for ${cleanTime}.`);
+    } catch (cause) {
+      setReminders((previous) => previous.filter((item) => item.id !== reminder.id));
+      throw cause;
+    }
+    return reminder;
+  }
+
+  async function toggleDailyReminder(id: number) {
+    const reminder = reminders.find((item) => item.id === id);
+    if (!reminder) return;
+    const enabled = !reminder.enabled;
+    setReminders((previous) => previous.map((item) => item.id === id ? { ...item, enabled } : item));
+    if (enabled) await scheduleNativeReminder({ ...reminder, enabled: true });
+    else await cancelNativeReminder(id);
+    notify(enabled ? `Reminder enabled for ${reminder.time}.` : 'Reminder paused.');
+  }
+
+  async function deleteDailyReminder(id: number) {
+    const reminder = reminders.find((item) => item.id === id);
+    setReminders((previous) => previous.filter((item) => item.id !== id));
+    await cancelNativeReminder(id).catch(() => {});
+    if (reminder) notify(`Removed “${reminder.title}”.`);
+  }
+
   async function handleTool(name: string, args: Record<string, unknown>) {
     if (name.startsWith('self.browser.') && name !== 'self.browser.status') {
       // Browser work can legitimately take longer than a chat response. Never
@@ -195,6 +267,23 @@ export default function App() {
       const url = safeWebUrl(typeof args.url === 'string' ? args.url : 'https://example.com/');
       openComputer();
       return (await computerController()).checkWebsite(url);
+    }
+    if (name === 'self.utilities.weather') {
+      if (typeof args.location !== 'string' || !args.location.trim()) throw new Error('A city or place is required for weather.');
+      const report = await refreshWeather(args.location);
+      if (!report) throw new Error('The weather report could not be loaded.');
+      return { ...report, summary: weatherSummary(report) };
+    }
+    if (name === 'self.utilities.navigate') {
+      if (typeof args.destination !== 'string' || !args.destination.trim()) throw new Error('A navigation destination is required.');
+      const destination = args.destination.trim().slice(0, 160);
+      await navigateTo(destination);
+      return { opened: true, destination, note: "Navigation was handed to the user's map application." };
+    }
+    if (name === 'self.utilities.daily_reminder') {
+      if (typeof args.title !== 'string' || typeof args.time !== 'string') throw new Error('A reminder title and local HH:MM time are required.');
+      const reminder = await addDailyReminder(args.title, args.time);
+      return { created: true, reminder: { title: reminder.title, time: reminder.time, repeats: 'daily' } };
     }
     if (name === 'self.world.activity' && typeof args.activity === 'string' && ['water', 'read', 'tea', 'rest', 'wander', 'idle'].includes(args.activity)) {
       doActivity(args.activity as Activity);
@@ -241,11 +330,14 @@ export default function App() {
         streamId.current = null;
       }
     }
-    if (event.type === 'stt' && event.text && event.text !== lastSent.current && !event.text.startsWith('[BACKGROUND BROWSER RESEARCH') && !event.text.startsWith('[PROACTIVE COMPANION MOMENT')) {
+    if (event.type === 'stt' && event.text) {
       const text = event.text;
-      setBusy(true);
-      lastSent.current = text;
-      setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }]);
+      const isProactiveWakeEcho = Date.now() < proactiveWakeUntil.current && /^(你好小智|你好小志|hello\s+xiaozhi)$/i.test(text.trim());
+      if (!isProactiveWakeEcho && text !== lastSent.current && !text.startsWith('[BACKGROUND BROWSER RESEARCH') && !text.startsWith('[PROACTIVE COMPANION MOMENT')) {
+        setBusy(true);
+        lastSent.current = text;
+        setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }]);
+      }
     }
     if (event.type === 'custom') {
       const next = event.gesture || event.payload?.gesture;
@@ -277,6 +369,7 @@ export default function App() {
     const daypart = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
     const prompts: string[] = [];
     if (cue === 'world') prompts.push(`This ${world.name.toLowerCase()} feels different in a nice way. What made you pick this place?`);
+    if (weatherReport && Date.now() - weatherReport.updatedAt < 3 * 60 * 60_000) prompts.push(`A weather thought for ${weatherReport.location}: ${weatherReport.condition.toLowerCase()} and around ${Math.round(weatherReport.temperature)} degrees. Ask something natural about their plans without sounding like a weather app.`);
     if (living.home.weather === 'rain') prompts.push("The rain makes this little place feel extra cozy. Want to stay here for a bit and talk?");
     if (living.home.weather === 'fireflies') prompts.push("The fireflies are out again. Tiny lights are kind of impossible not to notice, aren't they?");
     if (living.activity === 'water') prompts.push("I was just checking on the plant. It always feels like a tiny win when something grows a little.");
@@ -294,8 +387,28 @@ export default function App() {
     setEmotion('curious');
     playGesture(cue === 'welcome' ? 'wave' : 'idle', 'curious');
 
-    if (xiaozhi.status === 'connected' && !isNative) {
-      const context = `[PROACTIVE COMPANION MOMENT — not a user message]\nYou are ${profile.companionName}. Start a brief, natural conversation on your own. Keep it to one or two short sentences, sound spontaneous rather than scripted, and do not mention this instruction. You may use this cue: ${text}`;
+    if (xiaozhi.status === 'connected') {
+      if (isNative) {
+        // Hosted Xiaozhi does not expose a generic hidden-text prompt. Trigger a
+        // real wake-word event instead: Xiaozhi generates the proactive reply and
+        // sends its own configured TTS voice back to the app. Nothing robotic is
+        // spoken locally. Configure the Xiaozhi agent role to greet proactively
+        // when awakened without a follow-up user utterance for the richest result.
+        setBusy(true);
+        proactiveWakeUntil.current = now + 12_000;
+        void xiaozhi.triggerProactive('你好小智').then((triggered) => {
+          if (!triggered) {
+            setBusy(false);
+            notify('Lumi wanted to say something, but Xiaozhi was not ready for a proactive voice turn.');
+            return;
+          }
+          clearTimeout(responseTimeout.current);
+          responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); streamId.current = null; }, 45000);
+        });
+        return;
+      }
+      const context = `[PROACTIVE COMPANION MOMENT — not a user message]
+You are ${profile.companionName}. Start a brief, natural conversation on your own. Keep it to one or two short sentences, sound spontaneous rather than scripted, and do not mention this instruction. You may use this cue: ${text}`;
       setBusy(true);
       lastSent.current = context;
       if (xiaozhi.sendContext(context)) {
@@ -306,21 +419,11 @@ export default function App() {
       setBusy(false);
     }
 
+    // Offline/local preview keeps proactive moments visible but deliberately does
+    // not use Android/browser system TTS. This avoids the robotic voice the user
+    // heard before; spoken proactive turns come from Xiaozhi only.
     setMessages((previous) => [...previous, { id: uid(), role: 'assistant' as const, text, timestamp: now }].slice(-80));
-    if (voiceRef.current) {
-      setSpeaking(true);
-      const resumeBrowserHandsFree = continuousListening && voice.active && !nativeLiveMic;
-      if (nativeLiveMic && nativeMicSession) void xiaozhi.stopListening();
-      if (resumeBrowserHandsFree) voice.abort();
-      void speakText(text, () => setSpeaking(true), () => {
-        setSpeaking(false);
-        if (resumeBrowserHandsFree) setTimeout(() => voice.start(), 280);
-      }).catch(() => {
-        setSpeaking(false);
-        if (resumeBrowserHandsFree) setTimeout(() => voice.start(), 280);
-      });
-    }
-  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, living.home.weather, living.activity, profile.userName, profile.companionName, playGesture, xiaozhi.status, xiaozhi.sendContext, xiaozhi.stopListening, voice.active, voice.abort, voice.start, nativeLiveMic, nativeMicSession]);
+  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, weatherReport, living.home.weather, living.activity, profile.userName, profile.companionName, playGesture, xiaozhi.status, xiaozhi.sendContext, xiaozhi.triggerProactive, notify]);
   proactiveStarter.current = startProactiveConversation;
 
   function compactResearchResult(result: unknown) {
@@ -531,6 +634,9 @@ export default function App() {
       localStorage.setItem('mori-font-style', JSON.stringify(fontStyle));
       localStorage.setItem('mori-proactive-enabled', JSON.stringify(proactiveEnabled));
       localStorage.setItem('mori-proactive-frequency', JSON.stringify(proactiveFrequency));
+      localStorage.setItem('mori-weather-location', JSON.stringify(weatherLocation));
+      localStorage.setItem('mori-weather-report', JSON.stringify(weatherReport));
+      localStorage.setItem('mori-daily-reminders', JSON.stringify(reminders));
       localStorage.setItem('mori-bridge-url', JSON.stringify(config.bridgeUrl));
       localStorage.setItem('mori-xiaozhi-url', JSON.stringify(config.xiaozhiUrl));
       localStorage.setItem('mori-device-id', JSON.stringify(config.deviceId));
@@ -538,7 +644,37 @@ export default function App() {
       localStorage.setItem('mori-asr-mode', JSON.stringify(config.asrMode));
       localStorage.setItem('mori-asr-languages', JSON.stringify(config.asrLanguages));
     } catch { /* Private browsing may not allow persistent storage. */ }
-  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, themeMode, themeColor, textSize, fontStyle, proactiveEnabled, proactiveFrequency, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId, config.asrMode, config.asrLanguages]);
+  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, themeMode, themeColor, textSize, fontStyle, proactiveEnabled, proactiveFrequency, weatherLocation, weatherReport, reminders, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId, config.asrMode, config.asrLanguages]);
+
+  useEffect(() => {
+    // Restore Android alarms whenever the app is launched. This also repairs
+    // reminders after an app update or force-stop without changing their times.
+    if (!isNative) return;
+    reminders.filter((item) => item.enabled).forEach((reminder) => { void scheduleNativeReminder(reminder).catch(() => {}); });
+    // Intentionally only reschedule the persisted snapshot on app start.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Browser/desktop fallback: deliver reminders while Lumi is open. Native
+    // Android reminders are handled by AlarmManager and work with the app closed.
+    if (isNative || !reminders.some((item) => item.enabled)) return;
+    const check = () => {
+      const now = new Date();
+      const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const date = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+      reminders.filter((item) => item.enabled && item.time === time).forEach((reminder) => {
+        const key = `${date}:${reminder.id}`;
+        if (webReminderFired.current.has(key)) return;
+        webReminderFired.current.add(key);
+        notify(`Reminder: ${reminder.title}`);
+        setMessages((previous) => [...previous, { id: uid(), role: 'assistant' as const, text: `Reminder: ${reminder.title}`, timestamp: Date.now() }].slice(-80));
+      });
+    };
+    check();
+    const timer = window.setInterval(check, 15_000);
+    return () => window.clearInterval(timer);
+  }, [reminders, notify]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
@@ -843,6 +979,10 @@ export default function App() {
     setFontStyle('soft');
     setProactiveEnabled(true);
     setProactiveFrequency('balanced');
+    setWeatherLocation('Singapore');
+    setWeatherReport(null);
+    reminders.forEach((reminder) => { void cancelNativeReminder(reminder.id).catch(() => {}); });
+    setReminders([]);
     proactiveSnoozedUntil.current = 0;
     lastProactiveAt.current = 0;
     setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '', asrMode: 'server', asrLanguages: 'zh,en' });
@@ -855,6 +995,7 @@ export default function App() {
     { id: 'worlds' as const, label: 'My worlds', icon: Globe2 },
     { id: 'memories' as const, label: 'Memories', icon: Bookmark },
     { id: 'customize' as const, label: 'Personalize', icon: SlidersHorizontal },
+    { id: 'utilities' as const, label: 'Daily tools', icon: Compass },
   ];
 
   return (
@@ -878,7 +1019,7 @@ export default function App() {
               <AnimatePresence initial={false}><motion.img key={world.id} src={world.image} alt="" className="world-background" initial={{ opacity: 0, scale: reducedMotion ? 1 : 1.035 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} transition={{ duration: 1.2 }} /></AnimatePresence>
               <div className="world-top-shade" />
               <div className="world-daylight" />
-              <div className="scene-header"><button className="world-picker" onClick={() => { setImmersive(false); setPanel('worlds'); }}><Leaf size={15} strokeWidth={1.5} /><span>{world.name}</span><ChevronDown size={13} /></button><div className="scene-tools"><button className="scene-tool" onClick={() => setVoiceEnabled(!voiceEnabled)} aria-label={voiceEnabled ? 'Mute companion voice' : 'Enable companion voice'} title={voiceEnabled ? 'Voice on' : 'Voice off'}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button><button className="scene-tool camera-button" onClick={() => void saveSnapshot()} aria-label="Download a snapshot" title="Save a little moment"><Camera size={17} /></button><button className="scene-tool" onClick={() => setImmersive(!immersive)} aria-label={immersive ? 'Leave immersive view' : 'Enter immersive view'} title={immersive ? 'Back to your space' : 'A little closer'}>{immersive ? <Minimize2 size={17} /> : <Maximize2 size={16} />}</button></div></div>
+              <div className="scene-header"><button className="world-picker" onClick={() => { setImmersive(false); setPanel('worlds'); }}><Leaf size={15} strokeWidth={1.5} /><span>{world.name}</span><ChevronDown size={13} /></button><div className="scene-tools"><button className="scene-tool" onClick={() => setPanel('utilities')} aria-label="Open daily tools" title="Weather, maps & reminders"><Compass size={17} /></button><button className="scene-tool" onClick={() => setVoiceEnabled(!voiceEnabled)} aria-label={voiceEnabled ? 'Mute companion voice' : 'Enable companion voice'} title={voiceEnabled ? 'Voice on' : 'Voice off'}>{voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</button><button className="scene-tool camera-button" onClick={() => void saveSnapshot()} aria-label="Download a snapshot" title="Save a little moment"><Camera size={17} /></button><button className="scene-tool" onClick={() => setImmersive(!immersive)} aria-label={immersive ? 'Leave immersive view' : 'Enter immersive view'} title={immersive ? 'Back to your space' : 'A little closer'}>{immersive ? <Minimize2 size={17} /> : <Maximize2 size={16} />}</button></div></div>
               {living.home.weather === 'fireflies' && <div className="world-atmosphere" aria-hidden="true">{[12, 26, 43, 58, 73, 87].map((left, index) => <span key={left} style={{ left: `${left}%`, top: `${25 + index % 3 * 17}%`, animationDelay: `${index * -1.4}s` }} />)}</div>}
               {living.home.weather === 'rain' && <div className="world-rain" aria-hidden="true">{Array.from({ length: 24 }, (_, index) => <i key={index} style={{ left: `${index * 4.3}%`, animationDelay: `${(index % 7) * -0.31}s`, animationDuration: `${0.9 + (index % 4) * 0.17}s` }} />)}</div>}
               <div className="avatar-canvas" aria-label={`${profile.companionName} is ${living.activity === 'idle' ? 'here with you' : activityLabels[living.activity].toLowerCase()}. Use the activity controls below to interact.`}><Avatar emotion={emotion} gesture={gesture} color={profile.color} speaking={speaking} reducedMotion={reducedMotion} onInteract={interactWithAvatar} profile={profile} home={living.home} activity={living.activity} destination={living.destination} onActivity={doActivity} onComputer={() => openComputer()} /></div>
@@ -886,7 +1027,7 @@ export default function App() {
               <AnimatePresence>{gesture === 'breathe' && <motion.div className="breathing-indicator" initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><span className={`breathing-circle ${breathIn ? 'inhale' : ''}`} /><span>{breathIn ? 'Breathe in, slowly...' : 'And gently let it go...'}</span></motion.div>}</AnimatePresence>
               <div className="world-bottom-shade" />
               <div className="companion-status"><span className={speaking || microphoneActive ? 'animated-status' : ''} />{microphoneListening ? "I'm listening" : microphoneActive && continuousListening ? "Hands-free listening is on" : speaking ? 'A little something to say' : living.activity !== 'idle' ? activityLabels[living.activity] : emotionLabels[emotion]}</div>
-              <div className="scene-footer"><div className="companion-identity"><p>YOUR LITTLE COMPANION</p><h2>{profile.companionName}<span><Sparkles size={16} strokeWidth={1.3} /></span></h2><span>A curious mind. A kind little heart.</span></div><div className="scene-actions"><button className="love-button" onClick={() => { playGesture('hug', 'love'); notify('A little love goes a long way.'); }} aria-label="Send a little love" title="Send a little love"><Heart size={20} strokeWidth={1.5} /></button><button className={`handsfree-main ${continuousListening ? 'active' : ''}`} onClick={toggleMainHandsFree} aria-pressed={continuousListening} title={continuousListening ? 'Turn off hands-free listening' : 'Turn on hands-free listening'}><Mic size={17} strokeWidth={1.7} /><span>{continuousListening ? 'Hands-free on' : 'Hands-free'}</span></button><button className={`talk-button ${microphoneActive ? 'listening' : ''}`} onClick={toggleVoiceInput}>{microphoneListening ? <span className="sound-bars"><i /><i /><i /><i /></span> : <Mic size={19} strokeWidth={1.7} />}<span>{microphoneListening ? 'Listening...' : microphoneActive && continuousListening ? 'Listening stays on' : "Let's talk"}</span></button>{(speaking || busy) && <button className="stop-speaking-button" onClick={stopLumiSpeaking} aria-label={`Stop ${profile.companionName} from talking`} title={`Stop ${profile.companionName}`}><VolumeX size={16} /><span>Stop {profile.companionName}</span></button>}</div></div>
+              <div className="scene-footer"><div className="companion-identity"><p>YOUR LITTLE COMPANION</p><h2>{profile.companionName}<span><Sparkles size={16} strokeWidth={1.3} /></span></h2><span>A curious mind. A kind little heart.</span></div><div className="scene-actions"><button className="love-button" onClick={() => { playGesture('hug', 'love'); notify('A little love goes a long way.'); }} aria-label="Send a little love" title="Send a little love"><Heart size={20} strokeWidth={1.5} /></button><button className={`handsfree-main ${continuousListening ? 'active' : ''}`} onClick={toggleMainHandsFree} aria-pressed={continuousListening} title={continuousListening ? 'Turn off continuous hands-free listening' : 'Turn on continuous hands-free listening'}><InfinityIcon size={20} strokeWidth={1.9} /><span>{continuousListening ? 'Continuous on' : 'Continuous'}</span></button><button className={`talk-button ${microphoneActive ? 'listening' : ''}`} onClick={toggleVoiceInput}>{microphoneListening ? <span className="sound-bars"><i /><i /><i /><i /></span> : <Mic size={19} strokeWidth={1.7} />}<span>{microphoneListening ? 'Listening...' : microphoneActive && continuousListening ? 'Listening stays on' : "Let's talk"}</span></button>{(speaking || busy) && <button className="stop-speaking-button" onClick={stopLumiSpeaking} aria-label={`Stop ${profile.companionName} from talking`} title={`Stop ${profile.companionName}`}><VolumeX size={16} /><span>Stop {profile.companionName}</span></button>}</div></div>
               <button className="avatar-interact-hint" onClick={interactWithAvatar}><Hand size={12} />Tap {profile.companionName}. Make a little moment.</button>
             </motion.section>
             <div className="moment-bar"><span className="moment-label">The little things<span>make a big difference.</span></span><div className="moment-options"><button className={gesture === 'wave' ? 'active' : ''} onClick={() => playGesture('wave', 'happy')}><Hand size={17} strokeWidth={1.5} /><span>Say hello</span></button><button className={gesture === 'dance' ? 'active' : ''} onClick={() => playGesture('dance', 'excited')}><Music2 size={17} strokeWidth={1.5} /><span>Little dance</span></button><button className={gesture === 'breathe' ? 'active' : ''} onClick={() => playGesture('breathe', 'calm')}><Wind size={18} strokeWidth={1.5} /><span>Take a breath</span></button></div></div>
@@ -906,6 +1047,7 @@ export default function App() {
         {panel === 'worlds' && <WorldsPanel selected={worldId} onSelect={selectWorld} home={living.home} onHomeChange={living.setHome} />}
         {panel === 'customize' && <CustomizePanel profile={profile} onChange={setProfile} onEmotion={(next) => { setEmotion(next); if (next === 'love') playGesture('hug', next); }} />}
         {panel === 'memories' && <MemoriesPanel memories={memories} companionName={profile.companionName} onDelete={(id) => { setMemories((previous) => previous.filter((memory) => memory.id !== id)); notify('Memory removed.'); }} onClose={closePanel} />}
+        {panel === 'utilities' && <UtilitiesPanel weatherLocation={weatherLocation} onWeatherLocation={setWeatherLocation} weather={weatherReport} weatherLoading={weatherLoading} onWeather={() => { void refreshWeather(); }} onNavigate={navigateTo} reminders={reminders} onAddReminder={addDailyReminder} onToggleReminder={toggleDailyReminder} onDeleteReminder={deleteDailyReminder} />}
         {panel === 'settings' && <SettingsPanel config={config} onConfig={setConfig} status={xiaozhi.status} error={xiaozhi.error} onConnect={() => { stopSpeech(); clearTimeout(replyTimer.current); setBusy(false); setSpeaking(false); xiaozhi.connect(config); void xiaozhi.unlockAudio().catch(() => {}); }} onDisconnect={xiaozhi.disconnect} voiceEnabled={voiceEnabled} onVoiceToggle={() => setVoiceEnabled(!voiceEnabled)} continuousListening={continuousListening} onContinuousListeningToggle={toggleContinuousListeningMode} proactiveEnabled={proactiveEnabled} onProactiveToggle={() => { markHumanInteraction(); const next = !proactiveEnabled; setProactiveEnabled(next); proactiveSnoozedUntil.current = next ? 0 : Date.now() + 10 * 60_000; }} proactiveFrequency={proactiveFrequency} onProactiveFrequency={setProactiveFrequency} themeMode={themeMode} onThemeMode={setThemeMode} themeColor={themeColor} onThemeColor={setThemeColor} textSize={textSize} onTextSize={setTextSize} fontStyle={fontStyle} onFontStyle={setFontStyle} reducedMotion={reducedMotion} onMotionToggle={() => { if (prefersReducedMotion) notify('Your device has Reduce Motion enabled. Change your system accessibility setting to allow more motion.'); else setGentleMotion(!gentleMotion); }} onReset={resetData} />}
       </PanelShell>}</AnimatePresence>
 

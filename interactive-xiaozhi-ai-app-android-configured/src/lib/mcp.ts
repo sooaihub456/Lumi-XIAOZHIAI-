@@ -30,6 +30,21 @@ export const moriTools = [
     inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'Public HTTP/HTTPS address. Defaults to https://example.com/.' } } },
   },
   {
+    name: 'self.utilities.weather',
+    description: "Get the current weather and today's forecast summary for a city or place. Use this when the user asks about weather, temperature, rain, humidity, or whether they should bring an umbrella. Give the result conversationally instead of reading raw JSON.",
+    inputSchema: { type: 'object', properties: { location: { type: 'string', description: 'City or place name, optionally with country or region for clarity' } }, required: ['location'] },
+  },
+  {
+    name: 'self.utilities.navigate',
+    description: 'Open turn-by-turn map navigation to a destination the user has clearly requested. On Android this hands the destination to the mapping app; on web/desktop it opens Google Maps directions. Do not navigate somewhere unless the destination is clear.',
+    inputSchema: { type: 'object', properties: { destination: { type: 'string', description: 'Destination name or address' } }, required: ['destination'] },
+  },
+  {
+    name: 'self.utilities.daily_reminder',
+    description: 'Create a repeating daily reminder in the Lumi app. Use only when the user clearly asks to be reminded every day or daily. Time must be 24-hour HH:MM local device time. Keep reminder titles short and useful.',
+    inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'What to remind the user about' }, time: { type: 'string', description: 'Local time in 24-hour HH:MM format, for example 08:30 or 21:00' } }, required: ['title', 'time'] },
+  },
+  {
     name: 'self.world.activity',
     description: 'Let the companion interact with his home by tending his plant, reading, drinking tea, resting, wandering, or returning to idle.',
     inputSchema: { type: 'object', properties: { activity: { type: 'string', enum: ['water', 'read', 'tea', 'rest', 'wander', 'idle'] } }, required: ['activity'] },
