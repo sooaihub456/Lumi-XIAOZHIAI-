@@ -306,7 +306,7 @@ export default function App() {
       setBusy(false);
     }
 
-    setMessages((previous) => [...previous, { id: uid(), role: 'assistant', text, timestamp: now }].slice(-80));
+    setMessages((previous) => [...previous, { id: uid(), role: 'assistant' as const, text, timestamp: now }].slice(-80));
     if (voiceRef.current) {
       setSpeaking(true);
       const resumeBrowserHandsFree = continuousListening && voice.active && !nativeLiveMic;
