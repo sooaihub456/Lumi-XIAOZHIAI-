@@ -19,9 +19,9 @@ export default function UtilitiesPanel({
   weather: WeatherReport | null;
   weatherLoading: boolean;
   onWeather: () => void;
-  onNavigate: (destination: string) => Promise<void>;
+  onNavigate: (destination: string) => Promise<{ opened: boolean; target: string }>;
   reminders: DailyReminder[];
-  onAddReminder: (title: string, time: string) => Promise<void>;
+  onAddReminder: (title: string, time: string) => Promise<DailyReminder>;
   onToggleReminder: (id: number) => Promise<void>;
   onDeleteReminder: (id: number) => Promise<void>;
 }) {
