@@ -34,3 +34,9 @@ enable_wakeup_words_response_cache: false
 ```
 
 Do not send long prompts through Xiaozhi's `detect` message. That path is for wake words; Lumi uses it only to trigger the server-side agent.
+
+## Conversation momentum update
+
+The latest Lumi build also supports a bounded follow-through turn after Xiaozhi finishes speaking. If the user stays silent, Lumi can trigger Xiaozhi once more so the server-side LLM continues the **same topic** instead of waiting indefinitely. In Lively mode, at most two follow-through turns are allowed. Any real user speech resets the counter.
+
+For this to work well, the Xiaozhi role prompt must contain the new conversation-ownership and silence-continuation rules. If a wake-response cache returns a fixed greeting, the LLM cannot apply those rules; disable that cache on self-hosted servers.

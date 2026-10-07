@@ -21,7 +21,7 @@ import { desktopBridge } from './lib/desktop';
 import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
 import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
-import { DEFAULT_LUMI_SYSTEM_PROMPT } from './lib/lumiPrompt';
+import { DEFAULT_LUMI_SYSTEM_PROMPT, upgradeLumiSystemPrompt } from './lib/lumiPrompt';
 import { cancelNativeReminder, getWeather, newReminderId, openNavigation, scheduleNativeReminder, validateReminderTime, weatherSummary } from './lib/utilities';
 import { isNative } from './lib/platform';
 import type { Activity, ConnectionConfig, DailyReminder, Emotion, FontStyle, Gesture, Memory, Message, Panel, ProactiveFrequency, Profile, TextSize, ThemeColor, ThemeMode, WeatherReport, WorldId, XiaozhiEvent } from './types';
@@ -75,7 +75,7 @@ export default function App() {
   const [pendingResearchContexts, setPendingResearchContexts] = useState<string[]>([]);
   const computerRef = useRef(computer);
   computerRef.current = computer;
-  const [config, setConfig] = useState<ConnectionConfig>(() => ({ provider: readStored('mori-ai-provider', 'xiaozhi'), bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '', asrMode: readStored('mori-asr-mode', 'server'), asrLanguages: readStored('mori-asr-languages', 'zh,en'), openaiTokenUrl: readStored('mori-openai-token-url', ''), openaiVoice: readStored('mori-openai-voice', 'marin'), systemPrompt: readStored('mori-system-prompt', DEFAULT_LUMI_SYSTEM_PROMPT) }));
+  const [config, setConfig] = useState<ConnectionConfig>(() => ({ provider: readStored('mori-ai-provider', 'xiaozhi'), bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '', asrMode: readStored('mori-asr-mode', 'server'), asrLanguages: readStored('mori-asr-languages', 'zh,en'), openaiTokenUrl: readStored('mori-openai-token-url', ''), openaiVoice: readStored('mori-openai-voice', 'marin'), systemPrompt: upgradeLumiSystemPrompt(readStored('mori-system-prompt', DEFAULT_LUMI_SYSTEM_PROMPT)) }));
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = gentleMotion || !!prefersReducedMotion;
   const world = worlds.find((item) => item.id === worldId) ?? worlds[0];
@@ -98,6 +98,8 @@ export default function App() {
   const proactiveTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const proactiveWorldTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const proactiveActivityTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const conversationFollowupTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const conversationFollowupCount = useRef(0);
   const proactiveIndex = useRef(0);
   const lastProactiveAt = useRef(0);
   const lastHumanInteractionAt = useRef(Date.now());
@@ -105,7 +107,7 @@ export default function App() {
   const proactiveWakeUntil = useRef(0);
   const webReminderFired = useRef(new Set<string>());
   const mainHandsFreeStart = useRef(false);
-  const proactiveStarter = useRef<(cue: 'welcome' | 'idle' | 'world') => void>(() => {});
+  const proactiveStarter = useRef<(cue: 'welcome' | 'idle' | 'world' | 'followup') => void>(() => {});
   const previousWorld = useRef(worldId);
   const living = useLivingWorld(busy || speaking || !!panel || !!computer || gesture !== 'idle');
   voiceRef.current = voiceEnabled;
@@ -327,15 +329,38 @@ export default function App() {
       }
       if (event.state === 'stop') {
         clearTimeout(responseTimeout.current);
+        clearTimeout(conversationFollowupTimer.current);
         setSpeaking(false);
         setBusy(false);
         streamId.current = null;
+
+        // Conversation momentum: when the user stays silent after a normal AI
+        // reply, allow Lumi/Xiaozhi to carry the thread for one or two extra
+        // turns instead of always handing responsibility back to the user.
+        // A real user turn resets this allowance below, so this cannot become an
+        // endless self-conversation.
+        if (proactiveEnabled && xiaozhiConnection.status === 'connected') {
+          const maxFollowups = proactiveFrequency === 'lively' ? 2 : 1;
+          if (conversationFollowupCount.current < maxFollowups) {
+            const quietSince = lastHumanInteractionAt.current;
+            const delay = proactiveFrequency === 'lively' ? 9000 : proactiveFrequency === 'balanced' ? 16000 : 30000;
+            conversationFollowupTimer.current = setTimeout(() => {
+              const userStayedQuiet = lastHumanInteractionAt.current === quietSince && Date.now() - quietSince >= delay - 750;
+              if (!userStayedQuiet || document.visibilityState !== 'visible') return;
+              conversationFollowupCount.current += 1;
+              proactiveStarter.current('followup');
+            }, delay);
+          }
+        }
       }
     }
     if (event.type === 'stt' && event.text) {
       const text = event.text;
       const isProactiveWakeEcho = Date.now() < proactiveWakeUntil.current && /^(你好小智|你好小志|hello\s+xiaozhi)$/i.test(text.trim());
       if (!isProactiveWakeEcho && text !== lastSent.current && !text.startsWith('[BACKGROUND BROWSER RESEARCH') && !text.startsWith('[PROACTIVE COMPANION MOMENT')) {
+        clearTimeout(conversationFollowupTimer.current);
+        conversationFollowupCount.current = 0;
+        markHumanInteraction();
         setBusy(true);
         lastSent.current = text;
         setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }]);
@@ -363,28 +388,36 @@ export default function App() {
   const microphoneListening = nativeLiveMic ? xiaozhi.inputState === 'listening' : voice.listening;
   const microphoneInterim = nativeLiveMic ? '' : voice.interim;
 
-  const startProactiveConversation = useCallback((cue: 'welcome' | 'idle' | 'world') => {
+  const startProactiveConversation = useCallback((cue: 'welcome' | 'idle' | 'world' | 'followup') => {
     const now = Date.now();
     if (!proactiveEnabled || document.visibilityState !== 'visible' || now < proactiveSnoozedUntil.current || busy || speaking || panel || computer || (microphoneActive && !continuousListening)) return;
     const gap = proactiveFrequency === 'lively' ? 90_000 : proactiveFrequency === 'balanced' ? 180_000 : 420_000;
-    if (lastProactiveAt.current && now - lastProactiveAt.current < gap) return;
+    if (cue !== 'followup' && lastProactiveAt.current && now - lastProactiveAt.current < gap) return;
 
     const hour = new Date().getHours();
     const daypart = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
     const prompts: string[] = [];
-    if (cue === 'world') prompts.push(`This ${world.name.toLowerCase()} feels different in a nice way. What made you pick this place?`);
-    if (weatherReport && Date.now() - weatherReport.updatedAt < 3 * 60 * 60_000) prompts.push(`A weather thought for ${weatherReport.location}: ${weatherReport.condition.toLowerCase()} and around ${Math.round(weatherReport.temperature)} degrees. Ask something natural about their plans without sounding like a weather app.`);
-    if (living.home.weather === 'rain') prompts.push("The rain makes this little place feel extra cozy. Want to stay here for a bit and talk?");
-    if (living.home.weather === 'fireflies') prompts.push("The fireflies are out again. Tiny lights are kind of impossible not to notice, aren't they?");
-    if (living.activity === 'water') prompts.push("I was just checking on the plant. It always feels like a tiny win when something grows a little.");
-    if (living.activity === 'tea') prompts.push("Tea break thought: if you could pause the day for an hour, what would you spend it doing?");
-    if (living.activity === 'read') prompts.push("I wandered back to the book again. Tell me something you've been curious about lately and we can follow it together.");
-    if (living.activity === 'wander') prompts.push("I ended up wandering around for a bit. It made me wonder what kind of place you'd like us to visit next.");
-    if (living.activity === 'rest') prompts.push("I found a quiet spot for a moment. You doing okay over there?");
-    if (daypart === 'morning') prompts.push(`Good morning, ${profile.userName}. What's one small thing that would make today feel worthwhile?`);
-    if (daypart === 'afternoon') prompts.push("Random afternoon thought: want a tiny fact, a question, or just some company for a minute?");
-    if (daypart === 'evening') prompts.push("It's getting into evening territory. What was the most interesting part of your day, even if it was something small?");
-    prompts.push("I just had a little curiosity pop up: if you could instantly get good at one skill, what would you choose?", "Tiny conversation break: what's something unexpectedly good you've seen or heard lately?", "I don't want to just sit here silently all day. Tell me one thing on your mind and I'll run with it.");
+    if (cue === 'followup') {
+      prompts.push(
+        'Continue the current conversation yourself. Stay on the most recent topic, add one fresh thought/example/opinion, and do not repeat your last question or ask what the user wants to talk about.',
+        'Keep the current thread moving without waiting for the user to invent the next step. Contribute something new first; only ask one small specific question if it genuinely helps.',
+        'Follow through on your previous reply. If you asked something and the user stayed quiet, give your own thought or make a concrete suggestion instead of repeating the question.'
+      );
+    } else {
+      if (cue === 'world') prompts.push(`This ${world.name.toLowerCase()} feels different in a nice way. What made you pick this place?`);
+      if (weatherReport && Date.now() - weatherReport.updatedAt < 3 * 60 * 60_000) prompts.push(`A weather thought for ${weatherReport.location}: ${weatherReport.condition.toLowerCase()} and around ${Math.round(weatherReport.temperature)} degrees. Ask something natural about their plans without sounding like a weather app.`);
+      if (living.home.weather === 'rain') prompts.push("The rain makes this little place feel extra cozy. Want to stay here for a bit and talk?");
+      if (living.home.weather === 'fireflies') prompts.push("The fireflies are out again. Tiny lights are kind of impossible not to notice, aren't they?");
+      if (living.activity === 'water') prompts.push("I was just checking on the plant. It always feels like a tiny win when something grows a little.");
+      if (living.activity === 'tea') prompts.push("Tea break thought: if you could pause the day for an hour, what would you spend it doing?");
+      if (living.activity === 'read') prompts.push("I wandered back to the book again. Tell me something you've been curious about lately and we can follow it together.");
+      if (living.activity === 'wander') prompts.push("I ended up wandering around for a bit. It made me wonder what kind of place you'd like us to visit next.");
+      if (living.activity === 'rest') prompts.push("I found a quiet spot for a moment. You doing okay over there?");
+      if (daypart === 'morning') prompts.push(`Good morning, ${profile.userName}. What's one small thing that would make today feel worthwhile?`);
+      if (daypart === 'afternoon') prompts.push("Random afternoon thought: want a tiny fact, a question, or just some company for a minute?");
+      if (daypart === 'evening') prompts.push("It's getting into evening territory. What was the most interesting part of your day, even if it was something small?");
+      prompts.push("I just had a little curiosity pop up: if you could instantly get good at one skill, what would you choose?", "Tiny conversation break: what's something unexpectedly good you've seen or heard lately?", "I don't want to just sit here silently all day. Tell me one thing on your mind and I'll run with it.");
+    }
 
     const text = prompts[proactiveIndex.current++ % prompts.length];
     lastProactiveAt.current = now;
@@ -737,6 +770,7 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     clearInterval(proactiveTimer.current);
     clearTimeout(proactiveWorldTimer.current);
     clearTimeout(proactiveActivityTimer.current);
+    clearTimeout(conversationFollowupTimer.current);
     clearTimeout(toastTimer.current);
     researchController.current?.abort();
     stopSpeech();
@@ -760,6 +794,8 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
 
   function sendMessage(rawText: string) {
     markHumanInteraction();
+    clearTimeout(conversationFollowupTimer.current);
+    conversationFollowupCount.current = 0;
     const text = rawText.trim().slice(0, 2000);
     if (!text || busy) return;
     const requestedActivity = activityIntent(text);
@@ -880,6 +916,8 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
 
   function stopLumiSpeaking() {
     markHumanInteraction();
+    clearTimeout(conversationFollowupTimer.current);
+    conversationFollowupCount.current = 0;
     proactiveSnoozedUntil.current = Date.now() + 10 * 60_000;
     clearTimeout(replyTimer.current);
     clearTimeout(responseTimeout.current);
@@ -904,6 +942,8 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     clearTimeout(replyTimer.current);
     clearTimeout(responseTimeout.current);
     clearTimeout(researchDeliveryTimer.current);
+    clearTimeout(conversationFollowupTimer.current);
+    conversationFollowupCount.current = 0;
     xiaozhi.interrupt();
     stopSpeech();
     streamId.current = null;
