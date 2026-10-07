@@ -104,6 +104,10 @@ export default function App() {
   const proactiveIndex = useRef(0);
   const lastProactiveAt = useRef(0);
   const lastHumanInteractionAt = useRef(Date.now());
+  const lastConversationActivityAt = useRef(Date.now());
+  const conversationProtectedUntil = useRef(0);
+  const reconnectGreetingGuardUntil = useRef(0);
+  const nativeProactiveInFlight = useRef(false);
   const proactiveSnoozedUntil = useRef(0);
   const proactiveWakeUntil = useRef(0);
   const topicFeed = useRef<ConversationTopicFeed | null>(readCachedTopicFeed());
@@ -123,7 +127,13 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), 5500);
   }, []);
   const markHumanInteraction = useCallback(() => {
-    lastHumanInteractionAt.current = Date.now();
+    const now = Date.now();
+    lastHumanInteractionAt.current = now;
+    lastConversationActivityAt.current = now;
+    // Protect the current session from proactive wake events while the user is
+    // actively talking. A Xiaozhi wake during this window can be interpreted as
+    // a brand-new conversation and replay the agent's default greeting.
+    conversationProtectedUntil.current = Math.max(conversationProtectedUntil.current, now + 90_000);
   }, []);
 
   const refreshConversationFuel = useCallback(async (interest = '', force = false) => {
@@ -347,8 +357,26 @@ export default function App() {
 
   function handleXiaozhiEvent(event: XiaozhiEvent) {
     if (event.type === 'hello') {
-      notify(`${profile.companionName} is connected to ${config.provider === 'openai-realtime' ? 'OpenAI Realtime' : 'Xiaozhi'}. Let's make a little conversation.`);
-      playGesture('wave', 'happy');
+      const resumingConversation = config.provider === 'xiaozhi' && Date.now() < reconnectGreetingGuardUntil.current;
+      if (resumingConversation) {
+        notify('Xiaozhi reconnected quietly. Keeping the current conversation.');
+      } else {
+        notify(`${profile.companionName} is connected to ${config.provider === 'openai-realtime' ? 'OpenAI Realtime' : 'Xiaozhi'}. Let's make a little conversation.`);
+        playGesture('wave', 'happy');
+      }
+    }
+    if (event.type === 'connection') {
+      if (event.state === 'reconnecting') {
+        // Only suppress a reconnect greeting when there really was a live
+        // conversation immediately before the transport dropped.
+        if (Date.now() - lastConversationActivityAt.current < 120_000) {
+          reconnectGreetingGuardUntil.current = Date.now() + 25_000;
+        }
+      }
+      if (event.state === 'reconnected') {
+        lastConversationActivityAt.current = Date.now();
+        conversationProtectedUntil.current = Math.max(conversationProtectedUntil.current, Date.now() + 90_000);
+      }
     }
     if (event.emotion) {
       const feeling = normalizeEmotion(event.emotion);
@@ -360,12 +388,38 @@ export default function App() {
     }
     if (event.type === 'tts') {
       if (event.state === 'start') {
+        const now = Date.now();
+        lastConversationActivityAt.current = now;
+        conversationProtectedUntil.current = Math.max(conversationProtectedUntil.current, now + 90_000);
         setSpeaking(true);
         if (isNative && !continuousListening) setNativeMicSession(false);
       }
       if (event.state === 'sentence_start' && event.text) {
         clearTimeout(responseTimeout.current);
         const text = event.text;
+        const now = Date.now();
+        lastConversationActivityAt.current = now;
+        conversationProtectedUntil.current = Math.max(conversationProtectedUntil.current, now + 90_000);
+
+        // Defensive reconnect/proactive guard. If Xiaozhi restarts its transport
+        // during a live conversation, its server can emit the agent's generic
+        // wake greeting again. Stop that greeting instead of letting it reset the
+        // topic. This guard is short-lived and only applies after a known
+        // reconnect or protected proactive race.
+        const genericGreeting = /^(?:你好|您好|嗨|哈[喽囉])[！!。，,\s]*(?:我是|这里是|很高兴|又见面|有什么|想聊|需要|今天想|请问)|^(?:hello|hi|hey)[!,.\s]*(?:i(?:'m| am)|how can i help|what can i do|what would you like|nice to (?:meet|see)|how are you)|(?:有什么(?:可以|能).{0,12}(?:帮|聊)|想聊(?:点|些)?什么|what (?:would|do) you (?:like|want) to talk about|how can i help|what can i do for you)/i.test(text.trim());
+        const guardedRestart = now < reconnectGreetingGuardUntil.current || (now < proactiveWakeUntil.current && now < conversationProtectedUntil.current);
+        if (genericGreeting && guardedRestart) {
+          reconnectGreetingGuardUntil.current = 0;
+          proactiveWakeUntil.current = 0;
+          nativeProactiveInFlight.current = false;
+          clearTimeout(conversationFollowupTimer.current);
+          conversationFollowupCount.current = 0;
+          xiaozhiConnection.interrupt();
+          setSpeaking(false);
+          setBusy(false);
+          streamId.current = null;
+          return;
+        }
         if (streamId.current) {
           const id = streamId.current;
           setMessages((previous) => previous.map((message) => message.id === id ? { ...message, text: `${message.text} ${text}` } : message));
@@ -377,6 +431,14 @@ export default function App() {
         responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); streamId.current = null; }, 45000);
       }
       if (event.state === 'stop') {
+        const now = Date.now();
+        lastConversationActivityAt.current = now;
+        // Hosted/native Xiaozhi needs a longer quiet window because its only
+        // client-side proactive primitive is a wake event. Do not let that wake
+        // masquerade as a continuation of the turn that just ended.
+        const nativeXiaozhi = config.provider === 'xiaozhi' && isNative;
+        conversationProtectedUntil.current = Math.max(conversationProtectedUntil.current, now + (nativeXiaozhi ? 150_000 : 30_000));
+        nativeProactiveInFlight.current = false;
         clearTimeout(responseTimeout.current);
         clearTimeout(conversationFollowupTimer.current);
         setSpeaking(false);
@@ -388,7 +450,7 @@ export default function App() {
         // turns instead of always handing responsibility back to the user.
         // A real user turn resets this allowance below, so this cannot become an
         // endless self-conversation.
-        if (proactiveEnabled && xiaozhiConnection.status === 'connected') {
+        if (proactiveEnabled && xiaozhiConnection.status === 'connected' && !(config.provider === 'xiaozhi' && isNative)) {
           const maxFollowups = proactiveFrequency === 'lively' ? 3 : proactiveFrequency === 'balanced' ? 2 : 1;
           if (conversationFollowupCount.current < maxFollowups) {
             const quietSince = lastHumanInteractionAt.current;
@@ -439,7 +501,18 @@ export default function App() {
 
   const startProactiveConversation = useCallback((cue: 'welcome' | 'idle' | 'world' | 'followup') => {
     const now = Date.now();
+    const nativeXiaozhi = config.provider === 'xiaozhi' && isNative;
     if (!proactiveEnabled || document.visibilityState !== 'visible' || now < proactiveSnoozedUntil.current || busy || speaking || panel || computer || (microphoneActive && !continuousListening)) return;
+
+    // Xiaozhi's hosted/native proactive path is a real wake-word event. Never
+    // use that event as an immediate follow-up, and never inject it into a recent
+    // live conversation. Otherwise Xiaozhi can create a fresh session and replay
+    // the default greeting in the middle of the user's current topic.
+    if (nativeXiaozhi) {
+      const nativeSafeIdle = proactiveFrequency === 'lively' ? 120_000 : proactiveFrequency === 'balanced' ? 210_000 : 480_000;
+      if (cue === 'followup' || nativeProactiveInFlight.current || now < conversationProtectedUntil.current || now - lastConversationActivityAt.current < nativeSafeIdle) return;
+    }
+
     const gap = proactiveFrequency === 'lively' ? 90_000 : proactiveFrequency === 'balanced' ? 180_000 : 420_000;
     if (cue !== 'followup' && lastProactiveAt.current && now - lastProactiveAt.current < gap) return;
 
@@ -492,20 +565,36 @@ export default function App() {
         return;
       }
       if (isNative) {
-        // The public Xiaozhi protocol cannot replace the hosted agent's system
-        // prompt from the phone. Trigger a real wake-word turn so all proactive
-        // audio comes from Xiaozhi's configured TTS voice, never Android TTS.
-        // Paste Lumi's proactive prompt from Settings into the Xiaozhi agent role.
+        // The public Xiaozhi protocol cannot inject a hidden continuation prompt.
+        // Its proactive primitive is a genuine wake-word turn. Pause an active
+        // hands-free microphone first so the wake cannot race the current listen
+        // session, then let normal hands-free resume after the Xiaozhi reply.
+        nativeProactiveInFlight.current = true;
         setBusy(true);
-        proactiveWakeUntil.current = now + 12_000;
-        void xiaozhi.triggerProactive('你好小智').then((triggered) => {
+        void (async () => {
+          const wasListening = xiaozhi.inputState === 'listening';
+          if (wasListening) {
+            await xiaozhi.stopListening();
+            await new Promise((resolve) => window.setTimeout(resolve, 220));
+          }
+          proactiveWakeUntil.current = Date.now() + 12_000;
+          const triggered = await xiaozhi.triggerProactive('你好小智');
           if (!triggered) {
+            nativeProactiveInFlight.current = false;
             setBusy(false);
             notify('Lumi wanted to say something, but Xiaozhi was not ready for a proactive voice turn.');
             return;
           }
           clearTimeout(responseTimeout.current);
-          responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); streamId.current = null; }, 45000);
+          responseTimeout.current = setTimeout(() => {
+            nativeProactiveInFlight.current = false;
+            setBusy(false);
+            setSpeaking(false);
+            streamId.current = null;
+          }, 45000);
+        })().catch(() => {
+          nativeProactiveInFlight.current = false;
+          setBusy(false);
         });
         return;
       }
@@ -527,7 +616,7 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     // not use Android/browser system TTS. This avoids the robotic voice the user
     // heard before; spoken proactive turns come only from the connected AI provider.
     setMessages((previous) => [...previous, { id: uid(), role: 'assistant' as const, text, timestamp: now }].slice(-80));
-  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, weatherReport, living.home.weather, living.activity, profile.userName, profile.companionName, config.provider, config.systemPrompt, playGesture, xiaozhi.status, xiaozhi.sendContext, xiaozhi.triggerProactive, notify]);
+  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, weatherReport, living.home.weather, living.activity, profile.userName, profile.companionName, config.provider, config.systemPrompt, playGesture, xiaozhi.status, xiaozhi.inputState, xiaozhi.stopListening, xiaozhi.sendContext, xiaozhi.triggerProactive, notify]);
   proactiveStarter.current = startProactiveConversation;
 
   function compactResearchResult(result: unknown) {
@@ -664,10 +753,10 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     const idleThreshold = proactiveFrequency === 'lively' ? 120_000 : proactiveFrequency === 'balanced' ? 240_000 : 600_000;
     const firstDelay = proactiveFrequency === 'lively' ? 18_000 : proactiveFrequency === 'balanced' ? 35_000 : 70_000;
     const first = setTimeout(() => {
-      if (Date.now() - lastHumanInteractionAt.current >= firstDelay - 1500) proactiveStarter.current('welcome');
+      if (Date.now() - lastConversationActivityAt.current >= firstDelay - 1500) proactiveStarter.current('welcome');
     }, firstDelay);
     proactiveTimer.current = setInterval(() => {
-      if (Date.now() - lastHumanInteractionAt.current >= idleThreshold) proactiveStarter.current('idle');
+      if (Date.now() - lastConversationActivityAt.current >= idleThreshold) proactiveStarter.current('idle');
     }, 20_000);
     return () => { clearTimeout(first); clearInterval(proactiveTimer.current); };
   }, [proactiveEnabled, proactiveFrequency]);
@@ -678,7 +767,7 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     clearTimeout(proactiveWorldTimer.current);
     if (!proactiveEnabled) return;
     proactiveWorldTimer.current = setTimeout(() => {
-      if (Date.now() - lastHumanInteractionAt.current >= 4500) proactiveStarter.current('world');
+      if (Date.now() - lastConversationActivityAt.current >= 4500) proactiveStarter.current('world');
     }, 5000);
     return () => clearTimeout(proactiveWorldTimer.current);
   }, [worldId, proactiveEnabled]);
@@ -688,7 +777,7 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     if (!proactiveEnabled || living.activity === 'idle') return;
     const delay = proactiveFrequency === 'lively' ? 4500 : proactiveFrequency === 'balanced' ? 6500 : 9500;
     proactiveActivityTimer.current = setTimeout(() => {
-      if (Date.now() - lastHumanInteractionAt.current >= delay - 1000) proactiveStarter.current('idle');
+      if (Date.now() - lastConversationActivityAt.current >= delay - 1000) proactiveStarter.current('idle');
     }, delay);
     return () => clearTimeout(proactiveActivityTimer.current);
   }, [living.activity, proactiveEnabled, proactiveFrequency]);

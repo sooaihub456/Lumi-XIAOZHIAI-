@@ -194,6 +194,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
           listeners.push(await NativeXiaozhi.addListener('state', (event) => {
             if (generation !== nativeGeneration.current || failed) return;
             if (event.state === 'reconnecting' || event.state === 'connecting') {
+              eventHandler.current({ type: 'connection', state: event.state });
               nativeActive.current = false;
               session.current = '';
               audio.current?.stop();
@@ -207,6 +208,7 @@ export function useXiaozhi(onEvent: (event: XiaozhiEvent) => void, onTool?: Mori
               // a fresh server hello/session_id.
               nativeActive.current = true;
               if (event.reconnected) {
+                eventHandler.current({ type: 'connection', state: 'reconnected' });
                 session.current = '';
                 setStatus('connecting');
                 setError('');
