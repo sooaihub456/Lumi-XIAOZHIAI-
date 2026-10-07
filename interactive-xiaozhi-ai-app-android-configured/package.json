@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "voice:openai": "node --env-file=.env.openai server/openai-realtime-token-server.mjs"
   },
   "dependencies": {
     "@capacitor-community/text-to-speech": "^8.0.2",

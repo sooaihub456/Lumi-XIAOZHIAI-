@@ -9,6 +9,8 @@ export type ThemeColor = 'sage' | 'lavender' | 'peach' | 'sky' | 'rose' | 'cocoa
 export type TextSize = 'small' | 'normal' | 'large' | 'xlarge';
 export type FontStyle = 'soft' | 'clean' | 'system';
 export type ProactiveFrequency = 'calm' | 'balanced' | 'lively';
+export type AiProvider = 'xiaozhi' | 'openai-realtime';
+export type OpenAIRealtimeVoice = 'alloy' | 'ash' | 'ballad' | 'coral' | 'echo' | 'sage' | 'shimmer' | 'verse' | 'marin' | 'cedar';
 
 export interface HomeSettings {
   daylight: Daylight;
@@ -82,6 +84,7 @@ export interface World {
 export type AsrMode = 'server' | 'bilingual-auto';
 
 export interface ConnectionConfig {
+  provider: AiProvider;
   bridgeUrl: string;
   xiaozhiUrl: string;
   deviceId: string;
@@ -89,6 +92,9 @@ export interface ConnectionConfig {
   token: string;
   asrMode: AsrMode;
   asrLanguages: string;
+  openaiTokenUrl: string;
+  openaiVoice: OpenAIRealtimeVoice;
+  systemPrompt: string;
 }
 
 export type ConnectionStatus = 'demo' | 'connecting' | 'connected' | 'error';

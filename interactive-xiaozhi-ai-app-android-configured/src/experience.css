@@ -605,3 +605,13 @@ html[data-theme='light'], html[data-theme='light'] body { background: #fcfcf9; }
   .reminder-create .reminder-time { grid-column: 1 / -1; grid-row: 2; }
   .utility-icon-button { grid-column: 2; grid-row: 1; }
 }
+
+/* Voice provider + proactive prompt settings */
+.proactive-prompt-settings { border-top: 1px solid var(--line); margin-top: 26px; padding-top: 24px; }
+.proactive-prompt-settings h3 { margin: 0 0 7px; color: #70845f; font-size: calc(13px * var(--font-scale, 1)); font-weight: 560; }
+.prompt-field { min-height: 245px; resize: vertical; line-height: 1.58; font-family: var(--app-font, inherit); }
+.prompt-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.prompt-actions .secondary-button { display: inline-flex; align-items: center; gap: 7px; }
+.provider-research-note { margin-top: 14px; padding: 12px 13px; border-radius: 11px; border: 1px dashed color-mix(in srgb, var(--accent-main) 32%, #dfe6d9 68%); background: color-mix(in srgb, var(--accent-light) 18%, #fafbf8 82%); color: #879779; font-size: calc(8.8px * var(--font-scale, 1)); line-height: 1.65; }
+.app-shell.theme-dark .proactive-prompt-settings { border-color: #2b362b; }
+.app-shell.theme-dark .provider-research-note { background: #1a231a; border-color: #344034; color: #95a591; }

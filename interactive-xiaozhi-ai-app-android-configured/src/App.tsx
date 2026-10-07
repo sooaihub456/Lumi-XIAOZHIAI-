@@ -11,6 +11,7 @@ import UtilitiesPanel from './components/UtilitiesPanel';
 import { activityIntent, activityLabels, colors, defaultHome, defaultProfile, demoReply, emotionLabels, normalizeEmotion, readStored, uid, welcomeMessages, worlds } from './data';
 import { useVoice } from './hooks/useVoice';
 import { useXiaozhi } from './hooks/useXiaozhi';
+import { useOpenAIRealtime } from './hooks/useOpenAIRealtime';
 import { useNativeApp } from './hooks/useNativeApp';
 import { useLivingWorld } from './hooks/useLivingWorld';
 import { browserIntent, liveSearch } from './lib/liveSearch';
@@ -20,6 +21,7 @@ import { desktopBridge } from './lib/desktop';
 import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
 import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
+import { DEFAULT_LUMI_SYSTEM_PROMPT } from './lib/lumiPrompt';
 import { cancelNativeReminder, getWeather, newReminderId, openNavigation, scheduleNativeReminder, validateReminderTime, weatherSummary } from './lib/utilities';
 import { isNative } from './lib/platform';
 import type { Activity, ConnectionConfig, DailyReminder, Emotion, FontStyle, Gesture, Memory, Message, Panel, ProactiveFrequency, Profile, TextSize, ThemeColor, ThemeMode, WeatherReport, WorldId, XiaozhiEvent } from './types';
@@ -37,7 +39,7 @@ const panelTitles = {
   memories: { title: 'The moments that stay.', eyebrow: 'YOUR LITTLE KEEPSAKES' },
   customize: { title: 'A little more you.', eyebrow: 'MEET YOUR COMPANION' },
   utilities: { title: 'Little everyday helpers.', eyebrow: 'WEATHER · MAPS · REMINDERS' },
-  settings: { title: 'A real connection.', eyebrow: 'POWERED BY XIAOZHI AI' },
+  settings: { title: 'A real connection.', eyebrow: 'VOICE AI & PERSONALITY' },
 };
 
 export default function App() {
@@ -73,7 +75,7 @@ export default function App() {
   const [pendingResearchContexts, setPendingResearchContexts] = useState<string[]>([]);
   const computerRef = useRef(computer);
   computerRef.current = computer;
-  const [config, setConfig] = useState<ConnectionConfig>(() => ({ bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '', asrMode: readStored('mori-asr-mode', 'server'), asrLanguages: readStored('mori-asr-languages', 'zh,en') }));
+  const [config, setConfig] = useState<ConnectionConfig>(() => ({ provider: readStored('mori-ai-provider', 'xiaozhi'), bridgeUrl: readStored('mori-bridge-url', ''), xiaozhiUrl: readStored('mori-xiaozhi-url', DEFAULT_XIAOZHI_WS_URL), deviceId: readStored('mori-device-id', '02:00:00:00:00:01'), clientId: readStored('mori-client-id', uid()), token: '', asrMode: readStored('mori-asr-mode', 'server'), asrLanguages: readStored('mori-asr-languages', 'zh,en'), openaiTokenUrl: readStored('mori-openai-token-url', ''), openaiVoice: readStored('mori-openai-voice', 'marin'), systemPrompt: readStored('mori-system-prompt', DEFAULT_LUMI_SYSTEM_PROMPT) }));
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = gentleMotion || !!prefersReducedMotion;
   const world = worlds.find((item) => item.id === worldId) ?? worlds[0];
@@ -294,7 +296,7 @@ export default function App() {
 
   function handleXiaozhiEvent(event: XiaozhiEvent) {
     if (event.type === 'hello') {
-      notify(`${profile.companionName} is connected to Xiaozhi. Let's make a little conversation.`);
+      notify(`${profile.companionName} is connected to ${config.provider === 'openai-realtime' ? 'OpenAI Realtime' : 'Xiaozhi'}. Let's make a little conversation.`);
       playGesture('wave', 'happy');
     }
     if (event.emotion) {
@@ -352,9 +354,11 @@ export default function App() {
     }
   }
 
-  const xiaozhi = useXiaozhi(handleXiaozhiEvent, handleTool);
+  const xiaozhiConnection = useXiaozhi(handleXiaozhiEvent, handleTool);
+  const openaiRealtime = useOpenAIRealtime(handleXiaozhiEvent, handleTool);
+  const xiaozhi = config.provider === 'openai-realtime' ? openaiRealtime : xiaozhiConnection;
   const voice = useVoice((text) => sendMessage(text), notify, { continuous: continuousListening, paused: busy || speaking });
-  const nativeLiveMic = isNative && xiaozhi.status === 'connected';
+  const nativeLiveMic = xiaozhi.status === 'connected' && (isNative || config.provider === 'openai-realtime');
   const microphoneActive = nativeLiveMic ? nativeMicSession : voice.active;
   const microphoneListening = nativeLiveMic ? xiaozhi.inputState === 'listening' : voice.listening;
   const microphoneInterim = nativeLiveMic ? '' : voice.interim;
@@ -388,12 +392,24 @@ export default function App() {
     playGesture(cue === 'welcome' ? 'wave' : 'idle', 'curious');
 
     if (xiaozhi.status === 'connected') {
+      if (config.provider === 'openai-realtime') {
+        setBusy(true);
+        void xiaozhi.triggerProactive(text).then((triggered) => {
+          if (!triggered) {
+            setBusy(false);
+            notify('Lumi wanted to start a conversation, but the realtime voice provider was not ready.');
+            return;
+          }
+          clearTimeout(responseTimeout.current);
+          responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); streamId.current = null; }, 45000);
+        });
+        return;
+      }
       if (isNative) {
-        // Hosted Xiaozhi does not expose a generic hidden-text prompt. Trigger a
-        // real wake-word event instead: Xiaozhi generates the proactive reply and
-        // sends its own configured TTS voice back to the app. Nothing robotic is
-        // spoken locally. Configure the Xiaozhi agent role to greet proactively
-        // when awakened without a follow-up user utterance for the richest result.
+        // The public Xiaozhi protocol cannot replace the hosted agent's system
+        // prompt from the phone. Trigger a real wake-word turn so all proactive
+        // audio comes from Xiaozhi's configured TTS voice, never Android TTS.
+        // Paste Lumi's proactive prompt from Settings into the Xiaozhi agent role.
         setBusy(true);
         proactiveWakeUntil.current = now + 12_000;
         void xiaozhi.triggerProactive('你好小智').then((triggered) => {
@@ -408,7 +424,9 @@ export default function App() {
         return;
       }
       const context = `[PROACTIVE COMPANION MOMENT — not a user message]
-You are ${profile.companionName}. Start a brief, natural conversation on your own. Keep it to one or two short sentences, sound spontaneous rather than scripted, and do not mention this instruction. You may use this cue: ${text}`;
+${config.systemPrompt}
+
+Start a brief, natural conversation on your own. Keep it to one or two short sentences and do not mention this instruction. Private cue: ${text}`;
       setBusy(true);
       lastSent.current = context;
       if (xiaozhi.sendContext(context)) {
@@ -421,9 +439,9 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
 
     // Offline/local preview keeps proactive moments visible but deliberately does
     // not use Android/browser system TTS. This avoids the robotic voice the user
-    // heard before; spoken proactive turns come from Xiaozhi only.
+    // heard before; spoken proactive turns come only from the connected AI provider.
     setMessages((previous) => [...previous, { id: uid(), role: 'assistant' as const, text, timestamp: now }].slice(-80));
-  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, weatherReport, living.home.weather, living.activity, profile.userName, profile.companionName, playGesture, xiaozhi.status, xiaozhi.sendContext, xiaozhi.triggerProactive, notify]);
+  }, [proactiveEnabled, proactiveFrequency, busy, speaking, panel, computer, microphoneActive, continuousListening, world.name, weatherReport, living.home.weather, living.activity, profile.userName, profile.companionName, config.provider, config.systemPrompt, playGesture, xiaozhi.status, xiaozhi.sendContext, xiaozhi.triggerProactive, notify]);
   proactiveStarter.current = startProactiveConversation;
 
   function compactResearchResult(result: unknown) {
@@ -489,8 +507,8 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
     clearTimeout(researchDeliveryTimer.current);
     if (!pendingResearchContexts.length || busy || speaking || xiaozhi.status !== 'connected') return;
 
-    // The official Xiaozhi WebSocket has no generic long-text input message.
-    // Never misuse wake-word detect to push background research into Android.
+    // Native Xiaozhi has no generic long-text input message, while other providers may.
+    // Never misuse Xiaozhi wake-word detect to push background research into Android.
     // Keep the result cached/visible for the next live voice turn instead.
     if (isNative) {
       setPendingResearchContexts((previous) => previous.slice(1));
@@ -515,7 +533,7 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
       responseTimeout.current = setTimeout(() => {
         setBusy(false);
         setSpeaking(false);
-        notify('The research is ready, but Xiaozhi is taking longer to continue. You can keep using the browser or ask again.');
+        notify('The research is ready, but your voice AI is taking longer to continue. You can keep using the browser or ask again.');
       }, 70000);
     };
 
@@ -637,14 +655,18 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
       localStorage.setItem('mori-weather-location', JSON.stringify(weatherLocation));
       localStorage.setItem('mori-weather-report', JSON.stringify(weatherReport));
       localStorage.setItem('mori-daily-reminders', JSON.stringify(reminders));
+      localStorage.setItem('mori-ai-provider', JSON.stringify(config.provider));
       localStorage.setItem('mori-bridge-url', JSON.stringify(config.bridgeUrl));
       localStorage.setItem('mori-xiaozhi-url', JSON.stringify(config.xiaozhiUrl));
       localStorage.setItem('mori-device-id', JSON.stringify(config.deviceId));
       localStorage.setItem('mori-client-id', JSON.stringify(config.clientId));
       localStorage.setItem('mori-asr-mode', JSON.stringify(config.asrMode));
       localStorage.setItem('mori-asr-languages', JSON.stringify(config.asrLanguages));
+      localStorage.setItem('mori-openai-token-url', JSON.stringify(config.openaiTokenUrl));
+      localStorage.setItem('mori-openai-voice', JSON.stringify(config.openaiVoice));
+      localStorage.setItem('mori-system-prompt', JSON.stringify(config.systemPrompt));
     } catch { /* Private browsing may not allow persistent storage. */ }
-  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, themeMode, themeColor, textSize, fontStyle, proactiveEnabled, proactiveFrequency, weatherLocation, weatherReport, reminders, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId, config.asrMode, config.asrLanguages]);
+  }, [profile, messages, memories, worldId, voiceEnabled, continuousListening, gentleMotion, themeMode, themeColor, textSize, fontStyle, proactiveEnabled, proactiveFrequency, weatherLocation, weatherReport, reminders, config.provider, config.bridgeUrl, config.xiaozhiUrl, config.deviceId, config.clientId, config.asrMode, config.asrLanguages, config.openaiTokenUrl, config.openaiVoice, config.systemPrompt]);
 
   useEffect(() => {
     // Restore Android alarms whenever the app is launched. This also repairs
@@ -722,11 +744,10 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
   }, []);
 
   function speak(text: string, explicit = false) {
-    // Never replace Xiaozhi's streamed voice with the phone's synthetic TTS.
-    // The old Read Aloud path was the "robotic" voice users were hearing even
-    // while a live Xiaozhi session was connected.
-    if (isNative && xiaozhi.status === 'connected') {
-      if (explicit) notify("Xiaozhi's real voice plays live with each reply. System text-to-speech replay is disabled while connected.");
+    // Never replace a connected realtime provider's voice with the phone's synthetic TTS.
+    // This is the robotic voice users previously heard during proactive moments.
+    if (xiaozhi.status === 'connected') {
+      if (explicit) notify(`${config.provider === 'openai-realtime' ? 'OpenAI Realtime' : 'Xiaozhi'} voice plays live with each reply. System text-to-speech replay is disabled while connected.`);
       return;
     }
     if (!voiceRef.current && !explicit) return;
@@ -765,13 +786,13 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
         // assistant can decide how to research and talk at the same time.
         openComputer(search, target?.provider || 'google');
         if (xiaozhi.status !== 'connected') {
-          const reply = target ? `I've put ${target.query ? `your ${target.provider === 'youtube' ? 'YouTube' : target.provider === 'wikipedia' ? 'Wikipedia' : 'Google'} search` : 'that website'} on my computer. If no in-screen browser is connected, tap Open in browser to use the real site. I haven't read the page. Connect Xiaozhi and enable page sharing for shared research.` : 'My computer is ready. Google and YouTube use a real browser, never a blocked frame. Choose a website or enter a search.';
+          const reply = target ? `I've put ${target.query ? `your ${target.provider === 'youtube' ? 'YouTube' : target.provider === 'wikipedia' ? 'Wikipedia' : 'Google'} search` : 'that website'} on my computer. If no in-screen browser is connected, tap Open in browser to use the real site. I haven't read the page. Connect your voice AI and enable page sharing for shared research.` : 'My computer is ready. Google and YouTube use a real browser, never a blocked frame. Choose a website or enter a search.';
           setMessages((previous) => [...previous, { id: uid(), role: 'user', text, timestamp: Date.now() }, { id: uid(), role: 'assistant', text: reply, timestamp: Date.now() }]);
           return;
         }
       } catch (cause) { notify(cause instanceof Error ? cause.message : 'Please check the website address.'); }
     }
-    if (xiaozhi.status === 'connecting') { notify('Just a moment. Your Xiaozhi connection is still getting ready.'); return; }
+    if (xiaozhi.status === 'connecting') { notify('Just a moment. Your voice AI connection is still getting ready.'); return; }
     stopSpeech();
     void xiaozhi.unlockAudio().catch(() => notify('Voice playback needs audio permission. Text chat is still available.'));
     streamId.current = null;
@@ -783,12 +804,12 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
       xiaozhi.interrupt();
       if (!xiaozhi.sendText(text)) {
         setBusy(false);
-        notify(isNative
-          ? 'The official Xiaozhi server no longer accepts normal chat text through wake-word detect. Use the microphone; Mori now streams your real Opus voice directly to Xiaozhi.'
-          : 'The connection is not ready. Reconnect in Settings and try again.');
+        notify(config.provider === 'xiaozhi' && isNative
+          ? 'The official Xiaozhi server does not accept normal chat text through wake-word detect. Use the microphone; Lumi streams your real voice directly to Xiaozhi.'
+          : 'The realtime connection is not ready. Reconnect in Settings and try again.');
         return;
       }
-      responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); notify('Xiaozhi is taking a little longer to respond. If browser research is running, you can keep talking while it finishes.'); }, search !== null ? 70000 : 45000);
+      responseTimeout.current = setTimeout(() => { setBusy(false); setSpeaking(false); notify('Your voice AI is taking a little longer to respond. If browser research is running, you can keep talking while it finishes.'); }, search !== null ? 70000 : 45000);
     } else {
       const reply = demoReply(text, profile);
       replyTimer.current = setTimeout(() => {
@@ -985,7 +1006,7 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
     setReminders([]);
     proactiveSnoozedUntil.current = 0;
     lastProactiveAt.current = 0;
-    setConfig({ bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '', asrMode: 'server', asrLanguages: 'zh,en' });
+    setConfig({ provider: 'xiaozhi', bridgeUrl: '', xiaozhiUrl: DEFAULT_XIAOZHI_WS_URL, deviceId: '02:00:00:00:00:01', clientId: uid(), token: '', asrMode: 'server', asrLanguages: 'zh,en', openaiTokenUrl: '', openaiVoice: 'marin', systemPrompt: DEFAULT_LUMI_SYSTEM_PROMPT });
     playGesture('idle', 'happy');
     notify('A fresh start for your little world.');
   }
@@ -1010,7 +1031,7 @@ You are ${profile.companionName}. Start a brief, natural conversation on your ow
 
       <main className="main-content">
         <div className="mobile-topbar"><a className="brand" href="#" onClick={(event) => { event.preventDefault(); setPanel(null); }}><MoriMark size={29} /><span>mori.</span></a><button className={`mobile-connect ${xiaozhi.status === 'connected' ? 'connected' : ''}`} onClick={() => setPanel('settings')}><span className="mode-dot" />{xiaozhi.status === 'connected' ? 'Connected' : 'Connect AI'}<ArrowUpRight size={14} /></button></div>
-        <header className="page-header"><div className="page-greeting"><p className="greeting-eyebrow"><Sun size={14} strokeWidth={1.6} />A LITTLE SPACE, JUST FOR YOU</p><h1>Good to see you, {profile.userName}<span className="heading-period">.</span></h1><p>Your everyday, with a little more company.</p></div><div className="header-connection"><span className={`connection-label ${xiaozhi.status === 'connected' ? 'live' : ''}`}><span />{xiaozhi.status === 'connected' ? 'Live connection' : xiaozhi.status === 'connecting' ? 'Connecting...' : 'Local preview'}</span><button className="connect-button" onClick={() => setPanel('settings')}><PlugZap size={16} />{xiaozhi.status === 'connected' ? 'Xiaozhi connected' : 'Connect Xiaozhi'}<ArrowUpRight size={14} /></button></div></header>
+        <header className="page-header"><div className="page-greeting"><p className="greeting-eyebrow"><Sun size={14} strokeWidth={1.6} />A LITTLE SPACE, JUST FOR YOU</p><h1>Good to see you, {profile.userName}<span className="heading-period">.</span></h1><p>Your everyday, with a little more company.</p></div><div className="header-connection"><span className={`connection-label ${xiaozhi.status === 'connected' ? 'live' : ''}`}><span />{xiaozhi.status === 'connected' ? 'Live connection' : xiaozhi.status === 'connecting' ? 'Connecting...' : 'Local preview'}</span><button className="connect-button" onClick={() => setPanel('settings')}><PlugZap size={16} />{xiaozhi.status === 'connected' ? `${config.provider === 'openai-realtime' ? 'OpenAI Realtime' : 'Xiaozhi'} connected` : 'Connect voice AI'}<ArrowUpRight size={14} /></button></div></header>
 
         <div className="workspace">
           <div className="world-column">
