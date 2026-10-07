@@ -22,6 +22,7 @@ import { speakText, stopSpeech } from './lib/speech';
 import { exportFile, isShareCancellation } from './lib/files';
 import { DEFAULT_XIAOZHI_WS_URL } from './lib/xiaozhiNative';
 import { DEFAULT_LUMI_SYSTEM_PROMPT, upgradeLumiSystemPrompt } from './lib/lumiPrompt';
+import { clearCachedTopicFeed, conversationFuel, deriveInterestKeywords, discoverConversationTopics, isTopicFeedFresh, readCachedTopicFeed, type ConversationTopicFeed } from './lib/topicRadar';
 import { cancelNativeReminder, getWeather, newReminderId, openNavigation, scheduleNativeReminder, validateReminderTime, weatherSummary } from './lib/utilities';
 import { isNative } from './lib/platform';
 import type { Activity, ConnectionConfig, DailyReminder, Emotion, FontStyle, Gesture, Memory, Message, Panel, ProactiveFrequency, Profile, TextSize, ThemeColor, ThemeMode, WeatherReport, WorldId, XiaozhiEvent } from './types';
@@ -105,6 +106,10 @@ export default function App() {
   const lastHumanInteractionAt = useRef(Date.now());
   const proactiveSnoozedUntil = useRef(0);
   const proactiveWakeUntil = useRef(0);
+  const topicFeed = useRef<ConversationTopicFeed | null>(readCachedTopicFeed());
+  const topicRefreshController = useRef<AbortController | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const webReminderFired = useRef(new Set<string>());
   const mainHandsFreeStart = useRef(false);
   const proactiveStarter = useRef<(cue: 'welcome' | 'idle' | 'world' | 'followup') => void>(() => {});
@@ -119,6 +124,28 @@ export default function App() {
   }, []);
   const markHumanInteraction = useCallback(() => {
     lastHumanInteractionAt.current = Date.now();
+  }, []);
+
+  const refreshConversationFuel = useCallback(async (interest = '', force = false) => {
+    const existing = topicFeed.current;
+    const normalizedInterest = interest.trim().toLowerCase();
+    const existingMatchesHint = !normalizedInterest || existing?.interests.some((item) => item.toLowerCase().includes(normalizedInterest) || normalizedInterest.includes(item.toLowerCase()));
+    if (!force && existingMatchesHint && isTopicFeedFresh(existing)) return existing;
+
+    topicRefreshController.current?.abort();
+    const controller = new AbortController();
+    topicRefreshController.current = controller;
+    const interests = deriveInterestKeywords(messagesRef.current, interest);
+    try {
+      const next = await discoverConversationTopics(interests, controller.signal);
+      if (controller.signal.aborted) return topicFeed.current;
+      if (next.topics.length) topicFeed.current = next;
+      return next.topics.length ? next : existing;
+    } catch (cause) {
+      if (controller.signal.aborted) return existing;
+      console.warn('Lumi topic discovery refresh failed.', cause);
+      return existing;
+    }
   }, []);
   const closePanel = useCallback(() => setPanel(null), []);
   const playGesture = useCallback((next: Gesture, feeling?: Emotion) => {
@@ -272,6 +299,28 @@ export default function App() {
       openComputer();
       return (await computerController()).checkWebsite(url);
     }
+    if (name === 'self.conversation.discover_topics') {
+      const interest = typeof args.interest === 'string' ? args.interest.trim().slice(0, 120) : '';
+      const requestedLimit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.round(args.limit) : 5;
+      const limit = Math.max(1, Math.min(8, requestedLimit));
+      const preferLight = args.prefer_light !== false;
+      const feed = await refreshConversationFuel(interest, false);
+      if (!feed?.topics.length) {
+        return {
+          status: 'temporarily_unavailable',
+          topics: [],
+          note: 'Fresh topic sources are temporarily unavailable. Continue the current thread or choose a lightweight timeless topic yourself instead of asking the user to invent one.',
+        };
+      }
+      return {
+        status: 'ready',
+        updated_at: new Date(feed.updatedAt).toISOString(),
+        inferred_interests: feed.interests,
+        sources: feed.sources,
+        topics: conversationFuel(feed, { limit, interest, preferLight }),
+        note: 'Conversation fuel only. Pick at most one or two items. Do not read a headline list. Explain why one item is interesting, add your own thought/opinion/connection, and keep the conversation moving. Prefer continuity if the current thread is still strong.',
+      };
+    }
     if (name === 'self.utilities.weather') {
       if (typeof args.location !== 'string' || !args.location.trim()) throw new Error('A city or place is required for weather.');
       const report = await refreshWeather(args.location);
@@ -335,15 +384,15 @@ export default function App() {
         streamId.current = null;
 
         // Conversation momentum: when the user stays silent after a normal AI
-        // reply, allow Lumi/Xiaozhi to carry the thread for one or two extra
+        // reply, allow Lumi/Xiaozhi to carry the thread for a few bounded extra
         // turns instead of always handing responsibility back to the user.
         // A real user turn resets this allowance below, so this cannot become an
         // endless self-conversation.
         if (proactiveEnabled && xiaozhiConnection.status === 'connected') {
-          const maxFollowups = proactiveFrequency === 'lively' ? 2 : 1;
+          const maxFollowups = proactiveFrequency === 'lively' ? 3 : proactiveFrequency === 'balanced' ? 2 : 1;
           if (conversationFollowupCount.current < maxFollowups) {
             const quietSince = lastHumanInteractionAt.current;
-            const delay = proactiveFrequency === 'lively' ? 9000 : proactiveFrequency === 'balanced' ? 16000 : 30000;
+            const delay = proactiveFrequency === 'lively' ? 7000 : proactiveFrequency === 'balanced' ? 12000 : 25000;
             conversationFollowupTimer.current = setTimeout(() => {
               const userStayedQuiet = lastHumanInteractionAt.current === quietSince && Date.now() - quietSince >= delay - 750;
               if (!userStayedQuiet || document.visibilityState !== 'visible') return;
@@ -401,7 +450,7 @@ export default function App() {
       prompts.push(
         'Continue the current conversation yourself. Stay on the most recent topic, add one fresh thought/example/opinion, and do not repeat your last question or ask what the user wants to talk about.',
         'Keep the current thread moving without waiting for the user to invent the next step. Contribute something new first; only ask one small specific question if it genuinely helps.',
-        'Follow through on your previous reply. If you asked something and the user stayed quiet, give your own thought or make a concrete suggestion instead of repeating the question.'
+        'Follow through on your previous reply. If you asked something and the user stayed quiet, give your own thought or make a concrete suggestion instead of repeating the question. If the recent thread is genuinely exhausted, call self.conversation.discover_topics and transition into one fresh relevant item yourself.'
       );
     } else {
       if (cue === 'world') prompts.push(`This ${world.name.toLowerCase()} feels different in a nice way. What made you pick this place?`);
@@ -416,7 +465,11 @@ export default function App() {
       if (daypart === 'morning') prompts.push(`Good morning, ${profile.userName}. What's one small thing that would make today feel worthwhile?`);
       if (daypart === 'afternoon') prompts.push("Random afternoon thought: want a tiny fact, a question, or just some company for a minute?");
       if (daypart === 'evening') prompts.push("It's getting into evening territory. What was the most interesting part of your day, even if it was something small?");
-      prompts.push("I just had a little curiosity pop up: if you could instantly get good at one skill, what would you choose?", "Tiny conversation break: what's something unexpectedly good you've seen or heard lately?", "I don't want to just sit here silently all day. Tell me one thing on your mind and I'll run with it.");
+      prompts.push(
+        'If there is no strong active thread, call self.conversation.discover_topics before speaking. Pick one fresh relevant/light item, explain why it caught your attention, give your own reaction or connection, and lead the conversation from there.',
+        'Use a fresh topic only if the current conversation has run out of momentum. If you do, call self.conversation.discover_topics, choose one strong item, and turn it into a natural thought rather than reading headlines.',
+        'Take initiative. Continue any good existing thread first; otherwise use self.conversation.discover_topics and bring up something current or trending that is genuinely worth talking about.'
+      );
     }
 
     const text = prompts[proactiveIndex.current++ % prompts.length];
@@ -587,6 +640,23 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
     }, 320);
     return () => clearTimeout(timer);
   }, [nativeLiveMic, nativeMicSession, continuousListening, busy, speaking, xiaozhi.inputState, xiaozhi.startListening]);
+
+  useEffect(() => {
+    if (!proactiveEnabled) return;
+    const warm = window.setTimeout(() => { void refreshConversationFuel('', false); }, 4500);
+    const interval = window.setInterval(() => { void refreshConversationFuel('', true); }, 20 * 60_000);
+    return () => { window.clearTimeout(warm); window.clearInterval(interval); };
+  }, [proactiveEnabled, refreshConversationFuel]);
+
+  useEffect(() => {
+    if (!proactiveEnabled) return;
+    const latest = messages[messages.length - 1];
+    if (!latest || latest.role !== 'user') return;
+    const feedAge = topicFeed.current ? Date.now() - topicFeed.current.updatedAt : Number.POSITIVE_INFINITY;
+    if (feedAge < 6 * 60_000) return;
+    const timer = window.setTimeout(() => { void refreshConversationFuel('', true); }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [messages, proactiveEnabled, refreshConversationFuel]);
 
   useEffect(() => {
     clearInterval(proactiveTimer.current);
@@ -1013,6 +1083,9 @@ Start a brief, natural conversation on your own. Keep it to one or two short sen
 
   function resetData() {
     researchController.current?.abort();
+    topicRefreshController.current?.abort();
+    topicFeed.current = null;
+    clearCachedTopicFeed();
     clearTimeout(responseTimeout.current);
     clearTimeout(researchDeliveryTimer.current);
     voice.abort();
